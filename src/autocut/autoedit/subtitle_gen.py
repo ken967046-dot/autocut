@@ -44,9 +44,14 @@ def make_subtitle_file(video_path: str | Path, out_path: Optional[str | Path] = 
     cues = cues_for_pieces([dict(s) for s in segs], [Piece("v", 0.0, end, 0.0, 1.0)], max_chars=max_chars)
     atomic_write_text(out, to_srt(cues))
     words = [s for s in segs if s.get("words")]
+    words_file = out.with_name(out.stem + ".words.json")
     if words:
-        atomic_write_text(out.with_name(out.stem + ".words.json"),
-                          json.dumps({"schema": "autocut.words/1", "segments": words}, ensure_ascii=False))
+        atomic_write_text(words_file, json.dumps({"schema": "autocut.words/1", "segments": words}, ensure_ascii=False))
+    else:
+        try:                                          # stale timings of an older transcript would cut the wrong words
+            words_file.unlink()
+        except FileNotFoundError:
+            pass
     if progress:
         progress(1.0, f"已存成 {out.name}（{len(cues)} 條）")
     return out, len(cues)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from typing import Optional
 
@@ -55,6 +56,21 @@ SCHEMA = {
     "required": ["items"],
     "additionalProperties": False,
 }
+
+
+_SECRET = re.compile(r"(sk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|x-api-key\S*\s*\S+)", re.IGNORECASE)
+
+
+def _safe(exc: BaseException) -> str:
+    """An error text that can go into ``plan.notes`` (which is saved in the project): API keys, tokens and the configured
+    key itself are masked; at most 120 characters."""
+    text = f"{type(exc).__name__}: {exc}"
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        val = os.environ.get(name) or ""
+        if len(val) >= 6:
+            text = text.replace(val, "***")
+    text = _SECRET.sub("***", text)
+    return text[:120]
 
 
 def available() -> tuple[bool, str]:
@@ -130,8 +146,12 @@ def judge_sentences(units, *, engine: str = "claude", language: str = "zh", note
         if not ok:
             notes.append(f"AI 判斷爆點無法使用：{why}；改用本機規則。")
             return None, info
-        import anthropic
-        client = anthropic.Anthropic(timeout=300.0)
+        try:
+            import anthropic
+            client = anthropic.Anthropic(timeout=300.0)
+        except Exception as exc:                          # broken install / bad configuration -> local rules
+            notes.append(f"AI 判斷爆點無法啟動（{_safe(exc)}），改用本機規則。")
+            return None, info
     lines = [f"[{i}] {_fmt(u.start)}–{_fmt(u.end)} {' '.join(u.text.split())}" for i, u in enumerate(units)]
     scores: dict[str, list] = {}
     try:
@@ -149,7 +169,7 @@ def judge_sentences(units, *, engine: str = "claude", language: str = "zh", note
     except Cancelled:
         raise
     except Exception as exc:                                  # network, auth, refusal, schema -> local rules
-        notes.append(f"AI 判斷爆點失敗（{str(exc)[:120]}），改用本機規則。")
+        notes.append(f"AI 判斷爆點失敗（{_safe(exc)}），改用本機規則。")
         return None, info
     if not scores:
         notes.append("AI 沒有回傳任何評分，改用本機規則。")

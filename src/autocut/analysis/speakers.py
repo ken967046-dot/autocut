@@ -237,7 +237,9 @@ def _smooth(x: np.ndarray, k: int) -> np.ndarray:
     if k <= 1 or x.size == 0:
         return x
     ker = np.ones(k) / k
-    return np.convolve(x, ker, mode="same")
+    full = np.convolve(x, ker, mode="full")           # mode="same" returns max(len) -- wrong when x is shorter than k
+    off = (k - 1) // 2
+    return full[off:off + x.size]
 
 
 def speaker_labels(sp: SpeakerEvidence, voiced_at: Callable[[float], bool], *, window: float = 1.0,

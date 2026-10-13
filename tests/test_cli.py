@@ -751,3 +751,16 @@ def test_subtitle_command_writes_srt_and_word_timings(tmp_path, capsys, monkeypa
     monkeypatch.setattr(sp, "transcribe", lambda *a, **k: (_ for _ in ()).throw(sp.SpeechUnavailable("尚未下載語音模型")))
     rc, out, err = run_main(capsys, "subtitle", video, "--force")
     assert rc != 0 and "--download" in (out + err) and "Traceback" not in (out + err)
+
+
+def test_subtitle_overwrite_without_word_timings_drops_the_stale_words_file(tmp_path, capsys, monkeypatch):
+    from autocut.analysis import speech as sp
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(cli, "_require_ffmpeg", lambda: None)
+    old = [{"start": 0.0, "end": 1.0, "text": "舊的", "words": [{"start": 0.0, "end": 1.0, "word": "舊的"}]}]
+    monkeypatch.setattr(sp, "transcribe", lambda *a, **k: sp.Transcript(old))
+    assert run_main(capsys, "subtitle", video)[0] == 0 and (tmp_path / "talk.words.json").exists()
+    monkeypatch.setattr(sp, "transcribe", lambda *a, **k: sp.Transcript([{"start": 0.0, "end": 1.0, "text": "新的"}]))
+    assert run_main(capsys, "subtitle", video, "--force")[0] == 0
+    assert not (tmp_path / "talk.words.json").exists()                       # no stale timings for filler removal

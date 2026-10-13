@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import math
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
@@ -111,16 +110,17 @@ def _norm(word: str) -> str:
 
 
 def is_filler(word: str, prev: str = "", nxt: str = "") -> bool:
-    """``word`` (one recognised word) is a filler: a pure one (嗯/呃/um), or a context one (那個/就是/然後/like) that is
-    repeated back to back or stands alone between pauses (``prev``/``nxt`` empty)."""
+    """``word`` (one recognised word) is a filler: a pure one (嗯/呃/um), or a context one (那個/就是/然後/對/like) that
+    STANDS ALONE -- nothing attached before and after (``prev`` / ``nxt`` empty: a pause or the edge of the sentence).
+
+    Repetition alone is not enough: 「對對方很好」 tokenised per character has two 「對」 in a row that are words.  A run of
+    the same context word is judged as a whole by :func:`filler_spans` (「對對對。」 between pauses is a filler)."""
     w = _norm(word)
     if not w:
         return False
     if _PURE_RE.match(w):
         return True
     if w in FILLERS_CONTEXT:
-        if w == _norm(prev) or w == _norm(nxt):
-            return True                                       # 那個…那個 / 然後然後
         return not _norm(prev) and not _norm(nxt)
     return False
 
@@ -332,37 +332,51 @@ def quote(text: str, n: int = 18) -> str:
 
 
 # -------------------------------------------------------------------------------------- filler spans
-def filler_spans(units: list[Sentence], *, margin: float = 0.02, min_len: float = 0.08) -> list[tuple[float, float, str]]:
-    """Source ranges of filler words (needs word timings): ``[(start, end, word)]``.  Neighbouring fillers merge."""
+def filler_spans(units: list[Sentence], *, margin: float = 0.02, min_len: float = 0.08,
+                 pause: float = 0.25) -> list[tuple[float, float, str]]:
+    """Source ranges of filler words (needs word timings): ``[(start, end, word)]``.  Neighbouring fillers merge.
+
+    Pure fillers (嗯/呃) always count.  A context filler counts only when its whole run of repeats (那個 / 對對對) stands
+    alone: a pause longer than ``pause`` (or the sentence edge) before the run AND after it."""
     out: list[tuple[float, float, str]] = []
+
+    def add(a: float, b: float, w: str) -> None:
+        a2, b2 = a - margin, b + margin
+        if out and a2 <= out[-1][1] + 0.05:
+            out[-1] = (out[-1][0], max(out[-1][1], b2), out[-1][2] + w)
+        else:
+            out.append((a2, b2, w))
+
     for s in units:
         toks = s.words
-        for i, (a, b, w) in enumerate(toks):
-            prev = toks[i - 1][2] if i else ""
-            nxt = toks[i + 1][2] if i + 1 < len(toks) else ""
-            # a pause before / after the word makes a context filler stand alone
-            if i and a - toks[i - 1][1] > 0.25:
-                prev = ""
-            if i + 1 < len(toks) and toks[i + 1][0] - b > 0.25:
-                nxt = ""
-            if is_filler(w, prev, nxt) and b - a >= min_len:
-                a2, b2 = a - margin, b + margin
-                if out and a2 <= out[-1][1] + 0.05:
-                    out[-1] = (out[-1][0], max(out[-1][1], b2), out[-1][2] + w.strip())
-                else:
-                    out.append((a2, b2, w.strip()))
+        i = 0
+        while i < len(toks):
+            a, b, w = toks[i]
+            nw = _norm(w)
+            if nw and _PURE_RE.match(nw):
+                if b - a >= min_len:
+                    add(a, b, w.strip())
+                i += 1
+                continue
+            if nw in FILLERS_CONTEXT:
+                j = i
+                while j + 1 < len(toks) and _norm(toks[j + 1][2]) == nw and toks[j + 1][0] - toks[j][1] <= pause:
+                    j += 1
+                alone_before = i == 0 or a - toks[i - 1][1] > pause
+                alone_after = j + 1 >= len(toks) or toks[j + 1][0] - toks[j][1] > pause
+                if alone_before and alone_after and toks[j][1] - a >= min_len:
+                    add(a, toks[j][1], "".join(t[2].strip() for t in toks[i:j + 1]))
+                i = j + 1
+                continue
+            i += 1
     return out
-
-
-def _is_cjk_char(w: str) -> bool:
-    return len(w) == 1 and unicodedata.east_asian_width(w) in ("W", "F")
 
 
 def repeated_word_spans(units: list[Sentence], *, min_len: float = 0.08) -> list[tuple[float, float, str]]:
     """Stutters: a word immediately repeated -> every copy but the last is cut.
 
-    A single Chinese character must repeat at least THREE times (我我我): doubling is normal grammar (聊聊、看看、謝謝、
-    天天、慢慢) and is never cut.  Longer words / Latin words count from two (the the / 我覺得我覺得)."""
+    A word must repeat at least THREE times in a row (我我我 / 我覺得我覺得我覺得 / the the the).  Doubling is normal
+    language and is never cut: 聊聊、謝謝、天天 (grammar), 非常非常、很多很多、very very (emphasis)."""
     out: list[tuple[float, float, str]] = []
     for s in units:
         toks = s.words
@@ -373,8 +387,7 @@ def repeated_word_spans(units: list[Sentence], *, min_len: float = 0.08) -> list
             while j + 1 < len(toks) and w and _norm(toks[j + 1][2]) == w and toks[j + 1][0] - toks[j][1] < 0.4:
                 j += 1
             run = j - i + 1
-            need = 3 if _is_cjk_char(w) else 2
-            if run >= need and not is_filler(toks[i][2], "", ""):
+            if run >= 3 and not is_filler(toks[i][2], "", ""):
                 a, b = toks[i][0], toks[j][0]
                 if b - a >= min_len:
                     out.append((a, b, toks[i][2].strip()))

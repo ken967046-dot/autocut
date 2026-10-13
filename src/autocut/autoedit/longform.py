@@ -153,7 +153,9 @@ def kept_ranges(units: list[hl.Sentence], chosen: set, dur: float) -> list[tuple
         lo = units[i - 1].end + 0.05 if i > 0 and (i - 1) not in chosen else 0.0
         hi = units[i + 1].start - 0.05 if i + 1 < len(units) and (i + 1) not in chosen else dur
         a, b = max(u.start - LEAD, lo, 0.0), min(u.end + TAIL, hi, dur)
-        a, b = min(a, u.start), max(b, u.end)
+        a, b = max(min(a, u.start), 0.0), min(max(b, u.end), dur)          # never outside the source
+        if b <= a:
+            continue
         if out and a - out[-1][1] < JOIN_GAP:
             pa, _pb, idx = out[-1]
             out[-1] = (pa, max(b, out[-1][1]), idx + [i])
@@ -393,6 +395,11 @@ def plan_longform(proj: Project, asset_id: str, params: Optional[LongformParams]
         feat.words = sc.transcript_words(hl.word_segments(ev, asset))
     dur = float(ev.duration or asset.duration)
     units = feat.units if feat.units else audio_units(feat)
+    # a subtitle file may run past the end of the video (wrong file, trailing credits): clip it to the source
+    units = [u for u in units if u.start < dur - 0.05]
+    for u in units:
+        u.end = min(u.end, dur)
+        u.words = [w for w in u.words if w[0] < dur]
     if not feat.units:
         notes.append("沒有文字可以判斷重點：以有人聲的段落為單位、依響度挑選（建議先產生字幕再剪）。")
     if not units:
@@ -554,7 +561,7 @@ def plan_longform(proj: Project, asset_id: str, params: Optional[LongformParams]
         decisions.append({
             "id": ids("d"), "kind": "filler", "sequence": sid,
             "summary": f"剪掉 {len(fillers)} 個水詞（{cut_stats['filler']:.1f} 秒）、{len(stutters)} 處重複字",
-            "why": (f"水詞：{ex}。" if ex else "") + "「嗯、呃」一律剪；「那個、就是、然後」只有單獨出現或連續重複時才剪（「那個人」不會被剪）。",
+            "why": (f"水詞：{ex}。" if ex else "") + "「嗯、呃」一律剪；「那個、就是、然後、對」只有前後都停頓、單獨出現時才剪（「那個人」「對對方」不會被剪）；同一詞連續三次以上才算重複字。",
             "evidence": {"cuts": [[_f(a), _f(b), w] for a, b, w in (fillers + stutters)[:200]]}})
     for u in ups[:MAX_DECISIONS]:
         decisions.append({"id": ids("d"), "kind": "zoom", "sequence": sid, "score": _f(u.zoom),

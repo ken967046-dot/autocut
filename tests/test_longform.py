@@ -332,3 +332,27 @@ def test_longform_on_real_media_with_stand_in_faces(tmp_path, monkeypatch):
     area = lambda f: float(np.mean(np.abs(f[: int(0.8 * f.shape[0])].astype(int) - 110) > 12))
     a_up, a_wide = area(frame_at(up.start + up.duration / 2)), area(frame_at(wide.start + wide.duration / 2))
     assert a_wide > 0.005 and a_up / a_wide == pytest.approx(up.transform.zoom ** 2, rel=0.25)
+
+
+# ---------------------------------------------------------------------------------- REVIEW-3 (Codex) regressions
+def test_kept_ranges_never_leave_the_source():
+    u = [hl.Sentence(9.0, 12.0, "字幕超出影片", score=1.0)]
+    for a, b, _i in lf.kept_ranges(u, {0}, 10.0):
+        assert 0.0 <= a < b <= 10.0
+
+
+def test_subtitles_past_the_end_of_the_video_do_not_make_out_of_range_clips(video, fake):
+    ev = podcast_ev(dur=60.0)
+    ev.speech = ev.speech + [{"start": 58.0, "end": 70.0, "text": "但是沒想到我竟然賠了300萬！"}]
+    fake.ev, fake.sp = ev, two_people(60.0)
+    plan = propose_longform(proj_with(video, 60.0), "a1", LongformParams(keep_ratio=0.4, speaker_zoom=False))
+    assert all(0.0 <= c.src_in < c.src_out <= 60.0 + 1e-6 for c in clips_of(plan))
+
+
+def test_smoothing_is_safe_when_there_are_fewer_samples_than_the_window():
+    sp = spk.SpeakerEvidence("a", "", 0.4, 5.0)
+    sp.tracks, sp.boxes = [{}, {}], [[None, None], [None, None]]
+    sp.activity = [[1.0, 2.0], [1.0, 1.0]]
+    lab, conf = spk.speaker_labels(sp, lambda t: True)
+    assert lab.shape == conf.shape == (2,)
+    assert spk.speaker_turns(sp, lambda t: True) is not None

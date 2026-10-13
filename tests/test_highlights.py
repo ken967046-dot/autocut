@@ -78,7 +78,7 @@ def test_content_index_mean_peak_and_hook_match_a_brute_force_answer():
 
 def test_fillers_and_stutters_need_context():
     assert hl.is_filler("嗯") and hl.is_filler("呃呃") and hl.is_filler("um")
-    assert hl.is_filler("那個", "那個", "我") and hl.is_filler("然後", "", "")
+    assert not hl.is_filler("那個", "那個", "我") and hl.is_filler("然後", "", "")   # repetition alone is not enough
     assert not hl.is_filler("那個", "我", "人") and not hl.is_filler("重點")
     u = hl.sentences([{"start": 0, "end": 5, "text": "嗯我我覺得那個人很好",
                        "words": [{"start": 0.0, "end": 0.4, "word": "嗯"}, {"start": 0.8, "end": 1.0, "word": "我"},
@@ -94,9 +94,10 @@ def test_fillers_and_stutters_need_context():
                                   {"start": 1.2, "end": 1.4, "word": "聊"}, {"start": 1.45, "end": 1.65, "word": "聊"},
                                   {"start": 1.7, "end": 1.9, "word": "天"}, {"start": 1.95, "end": 2.2, "word": "天"}]}])
     assert hl.repeated_word_spans(u3) == [(0.0, 0.5, "我")]  # keep the last 我, keep 聊聊 / 天天
-    u4 = hl.sentences([{"start": 0, "end": 2, "text": "the the cat", "words": [
-        {"start": 0.0, "end": 0.2, "word": " the"}, {"start": 0.3, "end": 0.5, "word": " the"}, {"start": 0.6, "end": 0.9, "word": " cat"}]}])
-    assert hl.repeated_word_spans(u4) == [(0.0, 0.3, "the")]
+    u4 = hl.sentences([{"start": 0, "end": 2, "text": "the the the cat", "words": [
+        {"start": 0.0, "end": 0.2, "word": " the"}, {"start": 0.3, "end": 0.5, "word": " the"},
+        {"start": 0.55, "end": 0.75, "word": " the"}, {"start": 0.8, "end": 1.1, "word": " cat"}]}])
+    assert hl.repeated_word_spans(u4) == [(0.0, 0.55, "the")]
 
 
 def test_transcript_priority_file_then_sidecar_then_speech(tmp_path):
@@ -241,3 +242,48 @@ def test_ai_judge_overrides_cached_and_falls_back(tmp_path, monkeypatch):
         ev = threading.Event()
         ev.set()
         lj.judge_sentences(other, notes=notes, client=_client(reply, record), cancel=ev)
+
+
+# ------------------------------------------------------------------ REVIEW-3 (Codex) regressions
+def _w(toks, t0=0.0, d=0.3):
+    return [{"start": t0 + i * d, "end": t0 + i * d + d * 0.9, "word": x} for i, x in enumerate(toks)]
+
+
+def test_repeated_context_word_inside_a_phrase_is_not_a_filler():
+    # 「對對方很好」 tokenised per character: the two 「對」 are words, not a filler
+    u = hl.sentences([{"start": 0, "end": 2, "text": "對對方很好", "words": _w(["對", "對", "方", "很好"])}])
+    assert hl.filler_spans(u) == []
+    # 「對對對。」 standing alone (pause after) still is
+    u2 = hl.sentences([{"start": 0, "end": 3, "text": "對對對。我覺得", "words": _w(["對", "對", "對"]) +
+                        [{"start": 1.9, "end": 2.4, "word": "我覺得"}]}])
+    assert hl.filler_spans(u2) and hl.filler_spans(u2)[0][2] == "對對對"
+
+
+def test_doubled_words_are_emphasis_not_stutters():
+    u = hl.sentences([{"start": 0, "end": 2, "text": "非常非常好", "words": _w(["非常", "非常", "好"])}])
+    assert hl.repeated_word_spans(u) == []
+    u3 = hl.sentences([{"start": 0, "end": 2, "text": "我覺得我覺得我覺得好", "words": _w(["我覺得"] * 3 + ["好"])}])
+    assert hl.repeated_word_spans(u3) == [(0.0, 0.6, "我覺得")]
+
+
+def test_ai_judge_client_init_failure_and_secret_free_notes(tmp_path, monkeypatch):
+    import sys
+    monkeypatch.setattr(lj, "cache_dir", lambda name: tmp_path)
+    monkeypatch.setattr(lj, "available", lambda: (True, ""))
+
+    class Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("init failed")
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=Boom))
+    notes: list = []
+    over, info = lj.judge_sentences(hl.sentences([{"start": 0, "end": 1, "text": "初始化失敗"}]), notes=notes)
+    assert over is None and info["engine"] == "local" and "改用本機規則" in notes[-1]
+
+    def leak(**kw):
+        raise RuntimeError("bad key sk-ant-api03-SECRET123 for Bearer abcdefSECRET")
+    client = types.SimpleNamespace(beta=types.SimpleNamespace(messages=types.SimpleNamespace(stream=leak)))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "abcdefSECRET")
+    notes = []
+    lj.judge_sentences(hl.sentences([{"start": 0, "end": 1, "text": "洩漏測試"}]), notes=notes, client=client)
+    assert "SECRET" not in " ".join(notes) and "改用本機規則" in notes[-1]
