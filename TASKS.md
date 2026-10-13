@@ -22,7 +22,7 @@
 | HL-1 | 短影音依「說了什麼」找爆點（字幕檔／同名字幕／語音辨識；選用 AI 判斷） | claude | review | `tests/test_highlights.py`（句子切分、爆點分數、視窗索引對照暴力解、水詞與疊字、文字來源優先序、AI 判斷用假客戶端：覆寫／快取／拒答／沒金鑰退回本機）、`tests/test_shorts.py`（無文字時權重比例與改版前相同）；**真實影片上的效果未驗證**（→ CODEX-2）|
 | SUBS-1 | 一鍵字幕：整支影片 → 同名 `.srt`＋`.words.json`（CLI `autocut subtitle`、對話框按鈕） | claude | review | `tests/test_cli.py`（假語音引擎：寫檔、不覆蓋、`--force`、模型未下載提示）、`tests/test_longform_dialog.py`（按鈕流程、覆蓋前詢問、下載前詢問）；**真實 faster-whisper 沒跑過**（SPEECH-1）|
 | LONG-1 | 長片精華：重點＋去水詞＋講者特寫（`autocut longform`、「長片精華…」對話框） | claude | review | `tests/test_longform.py`（選句／鋪陳／銜接、水詞與疊字、特寫觸發 3 秒、換人先全景、長段切回全景、爆點句推近、一人或兩人同時講不放大、審核→套用→一次復原；**真的 ffmpeg 渲染後量測特寫面積 ≈ 倍率²**；講者偵測用合成畫面＋替身人臉偵測器）、`tests/test_longform_dialog.py`（真引擎跑對話框、截圖已檢視）；**真實雙人訪談未驗證**（→ CODEX-3）|
-| REVIEW-3 | Codex 審查 HL-1／SUBS-1／LONG-1（唯讀、只看改動的檔案，省額度） | codex / user | todo | `docs/CODEX_TASKS.md` 的 CODEX-1 指令；報告貼回此處 |
+| REVIEW-3 | Codex 審查 HL-1／SUBS-1／LONG-1（唯讀、只看改動的檔案，省額度） | codex | done | **真正由 Codex 執行**（雲端環境開放 OpenAI 網域後，用使用者的 ChatGPT 方案以裝置碼登入）：第一輪 changes-requested（6 major、1 minor），全部重現、補測試、修正；複查兩輪後 **approve**。見下方審查紀錄 |
 | CODEX-2 | 用真實影片＋字幕校準爆點詞庫 | codex / user | todo | `scripts\windows\Codex-Task.ps1 -Task CODEX-2 -Extra "<影片與字幕路徑>"` |
 | CODEX-3 | 真實雙人訪談驗證講者特寫並微調 | codex / user | todo | `Codex-Task.ps1 -Task CODEX-3` |
 | CODEX-4 | 講者分析在 1 小時影片上的速度 | codex | todo | `Codex-Task.ps1 -Task CODEX-4` |
@@ -97,3 +97,16 @@
 - 沒驗證／已知限制：真實影片的選段品質、真實訪談的講者判斷（只用合成畫面與替身人臉偵測器）、真實 faster-whisper、真實 Claude API 回應
   （只驗證了 SDK 1.13 能組出請求、用假客戶端測流程）、Windows 實機、`Codex-Task.ps1` 只在 Linux 的 PowerShell 7.4 做過語法解析與 `-DryRun`。
 - 想請審查者特別看：`docs/CODEX_TASKS.md` CODEX-1 列出的五點。
+
+- 2026-10-13（REVIEW-3，**Codex** 審查，`codex-cli 0.162.1`，以使用者 ChatGPT 帳號登入，唯讀沙盒，只看 7 個改動的檔案）：
+  第一輪 changes-requested。每項都先在記憶體重現、補「修正前會失敗」的回歸測試、再修：
+  - major：「對對方很好」逐字切開時兩個「對」被當水詞 → 情境水詞改成「整串前後都停頓才算」，重複本身不算。
+  - major：「非常非常好」被當口吃 → 同一詞連續三次以上才算重複字（兩次是語法或強調）。
+  - major：字幕時間超出影片長度會產生超出素材的片段 → `kept_ranges` 夾在 0..長度、規劃時裁掉超出的字幕。
+  - major：`anthropic.Anthropic()` 初始化失敗不在例外處理內 → 移入，退回本機規則。
+  - major：錯誤訊息可能把 API 金鑰寫進 `plan.notes`（會存進專案檔）→ 先改成遮蔽，Codex 複查指出黑名單仍會漏
+    （`api_key=customToken123`）→ 改成**只寫固定描述**（HTTP 狀態類別、連線逾時、回覆格式錯誤或錯誤類型），完全不保存原始錯誤文字。
+  - major：覆寫字幕但新結果沒有逐字時間時留下舊 `.words.json`（剪水詞會用錯時間）→ 刪除舊檔。
+  - minor：取樣數少於平滑視窗時 `speaker_labels` 崩潰 → 卷積結果裁回原長度。
+  複查一：6 項已修正、1 項部分修正、修正未引入新問題；複查二：**approve**。完整測試（收集 2074 項）：2072 通過、2 跳過、0 失敗。
+  Codex 自己標明未做：pytest、實際渲染、GUI、Windows、真實 Whisper／Claude API（這些由 Claude 的測試或仍為 not_run）。
