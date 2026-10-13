@@ -1,0 +1,4 @@
+# 選用：自動產生字幕（語音辨識）。第一次使用會下載語音模型，需要網路。
+-r requirements.txt
+faster-whisper>=1.0
+opencc-python-reimplemented>=0.1.7

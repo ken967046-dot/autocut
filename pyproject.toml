@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocut-studio"
+version = "0.1.0"
+description = "AutoCut Studio - 桌面自動剪輯軟體：16:9 長影片 -> 9:16 短影音、多支毛片 -> 一支長片，並可像剪輯軟體一樣逐段修正"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+  "PySide6>=6.6",
+  "numpy>=1.26",
+  "opencv-python-headless>=4.10,<5",
+]
+
+[project.optional-dependencies]
+speech = [
+  "faster-whisper>=1.0",
+  "opencc-python-reimplemented>=0.1.7",
+]
+dev = [
+  "pytest>=8",
+]
+
+[project.scripts]
+autocut = "autocut.cli:main"
+
+[project.gui-scripts]
+autocut-studio = "autocut.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "ffmpeg: needs ffmpeg/ffprobe on PATH (skipped otherwise)",
+  "gui: needs PySide6 (runs with QT_QPA_PLATFORM=offscreen)",
+  "e2e: whole-job acceptance flows through the real window, engine and ffmpeg (slow; deselect with -m \"not e2e\")",
+]
