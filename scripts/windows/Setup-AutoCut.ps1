@@ -3,7 +3,7 @@
   files with the legacy code page).
 
   Run it by double-clicking Setup-AutoCut.bat in the project folder, or:
-      powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Setup-AutoCut.ps1 [-WithSpeech] [-SkipFfmpeg] [-NoShortcut] [-RunTests]
+      powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Setup-AutoCut.ps1 [-WithSpeech] [-WithAI] [-SkipFfmpeg] [-NoShortcut] [-RunTests]
 
   Where things go
     inside the project folder   .venv (the Python packages) and tools\ffmpeg (the ffmpeg download)
@@ -18,6 +18,7 @@
 #>
 param(
     [switch]$WithSpeech,     # also install faster-whisper + opencc (captions from speech; models download on first use)
+    [switch]$WithAI,         # also install the Claude SDK (optional AI highlight judge; needs an API key, sends subtitle text only)
     [switch]$SkipFfmpeg,     # do not download ffmpeg (use this when ffmpeg is already on PATH)
     [switch]$NoShortcut,     # do not create the desktop shortcut
     [switch]$RunTests        # run the test-suite at the end (needs ffmpeg)
@@ -89,6 +90,10 @@ Invoke-Checked 'pip install autocut' { & $venvPy -m pip install -e $Root --no-de
 if ($WithSpeech) {
     Step 'Installing speech recognition (faster-whisper, opencc). The model itself downloads the first time you use it.'
     Invoke-Checked 'pip install speech' { & $venvPy -m pip install -r (Join-Path $Root 'requirements-speech.txt') }
+}
+if ($WithAI) {
+    Step 'Installing the optional AI highlight judge (anthropic). It needs an API key and only ever sends subtitle text.'
+    Invoke-Checked 'pip install ai' { & $venvPy -m pip install -r (Join-Path $Root 'requirements-ai.txt') }
 }
 
 # ffmpeg is the one step that depends on somebody else's web server: when it fails the editor is still installed, so

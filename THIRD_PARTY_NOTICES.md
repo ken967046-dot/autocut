@@ -49,6 +49,7 @@ SOFTWARE.
 | CTranslate2（選用，faster-whisper 相依） | 推論引擎 | MIT | |
 | OpenAI Whisper 模型權重（選用） | 語音辨識模型 | MIT | |
 | OpenCC（選用，`opencc-python-reimplemented`） | 簡體轉繁體 | Apache-2.0／MIT（依套件） | 沒安裝時字幕維持辨識原文並提示 |
+| Anthropic Python SDK（選用，`anthropic`） | AI 判斷爆點（Claude API） | MIT | 需另外 `pip install -r requirements-ai.txt` 與 API 金鑰；預設關閉，只傳送字幕文字與時間碼 |
 | pytest（僅開發） | 測試 | MIT | |
 | PyInstaller（僅打包） | 產生 Windows 執行檔 | GPL-2.0 含打包例外（produced executables 不受 GPL 限制） | |
 

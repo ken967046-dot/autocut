@@ -8,6 +8,8 @@
       .\scripts\windows\Codex-Review.ps1 -Base HEAD~3             # review the last 3 commits
       .\scripts\windows\Codex-Review.ps1 -Focus "core/ops.py crossfade edge cases"
       .\scripts\windows\Codex-Review.ps1 -DryRun                  # only write the prompt file, do not call Codex
+      .\scripts\windows\Codex-Review.ps1 -Base 153ba1f -Paths src/autocut/autoedit/longform.py,src/autocut/analysis/speakers.py
+                                                                # review only these files (cheapest: saves Codex quota)
 
   Codex runs in a READ-ONLY sandbox (it cannot change files).  Output: .codex-runs\review-<time>.md (its final answer)
   and .codex-runs\review-<time>.prompt.txt (what it was asked).  Paste the result into TASKS.md and hand it to Claude.
@@ -16,6 +18,7 @@ param(
     [string]$Base = 'main',
     [ValidateSet('diff', 'all')] [string]$Scope = 'diff',
     [string]$Focus = '',
+    [string[]]$Paths = @(),
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -40,7 +43,11 @@ if ($Scope -eq 'diff' -and $hasGit) {
 } elseif ($Scope -eq 'diff') {
     $Scope = 'all'
 }
-if ($Scope -eq 'diff') {
+$Paths = @($Paths | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($Paths.Count -gt 0) {
+    $list = ($Paths -join ' ')
+    $prompt += "`n`n## This run`nReview ONLY these files (the user's Codex quota is limited -- do not read other files unless a finding needs one line of context): $list`nTheir changes: run ``git diff $Base...HEAD -- $list`` and read them in full where needed.`n"
+} elseif ($Scope -eq 'diff') {
     $prompt += "`n`n## This run`nReview ONLY the changes made on this branch: run ``git diff $Base...HEAD`` and read the touched files in full where needed.`n"
 } else {
     $prompt += "`n`n## This run`nReview the WHOLE project, starting from src/autocut/core, render, autoedit and gui (in that order).`n"

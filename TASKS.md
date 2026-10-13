@@ -19,6 +19,14 @@
 | WIN-3 | 硬體編碼器（NVENC/QSV/AMF）實機驗證 | codex / user | todo | 三種至少測使用者機器上有的那種 |
 | SPEECH-1 | 語音辨識（faster-whisper）實機驗證與模型選擇 | codex / user | todo | 中文影片產生字幕、轉繁體 |
 | PLUGIN-1 | 選用外掛「動態圖層」（HyperFrames）| claude | blocked | **核心驗收之後才做**；先在使用者電腦量測 Node／Chrome／渲染速度 |
+| HL-1 | 短影音依「說了什麼」找爆點（字幕檔／同名字幕／語音辨識；選用 AI 判斷） | claude | review | `tests/test_highlights.py`（句子切分、爆點分數、視窗索引對照暴力解、水詞與疊字、文字來源優先序、AI 判斷用假客戶端：覆寫／快取／拒答／沒金鑰退回本機）、`tests/test_shorts.py`（無文字時權重比例與改版前相同）；**真實影片上的效果未驗證**（→ CODEX-2）|
+| SUBS-1 | 一鍵字幕：整支影片 → 同名 `.srt`＋`.words.json`（CLI `autocut subtitle`、對話框按鈕） | claude | review | `tests/test_cli.py`（假語音引擎：寫檔、不覆蓋、`--force`、模型未下載提示）、`tests/test_longform_dialog.py`（按鈕流程、覆蓋前詢問、下載前詢問）；**真實 faster-whisper 沒跑過**（SPEECH-1）|
+| LONG-1 | 長片精華：重點＋去水詞＋講者特寫（`autocut longform`、「長片精華…」對話框） | claude | review | `tests/test_longform.py`（選句／鋪陳／銜接、水詞與疊字、特寫觸發 3 秒、換人先全景、長段切回全景、爆點句推近、一人或兩人同時講不放大、審核→套用→一次復原；**真的 ffmpeg 渲染後量測特寫面積 ≈ 倍率²**；講者偵測用合成畫面＋替身人臉偵測器）、`tests/test_longform_dialog.py`（真引擎跑對話框、截圖已檢視）；**真實雙人訪談未驗證**（→ CODEX-3）|
+| REVIEW-3 | Codex 審查 HL-1／SUBS-1／LONG-1（唯讀、只看改動的檔案，省額度） | codex / user | todo | `docs/CODEX_TASKS.md` 的 CODEX-1 指令；報告貼回此處 |
+| CODEX-2 | 用真實影片＋字幕校準爆點詞庫 | codex / user | todo | `scripts\windows\Codex-Task.ps1 -Task CODEX-2 -Extra "<影片與字幕路徑>"` |
+| CODEX-3 | 真實雙人訪談驗證講者特寫並微調 | codex / user | todo | `Codex-Task.ps1 -Task CODEX-3` |
+| CODEX-4 | 講者分析在 1 小時影片上的速度 | codex | todo | `Codex-Task.ps1 -Task CODEX-4` |
+| CODEX-5 | 平滑推近（取代硬切特寫）——先提案 | codex | todo | 只寫提案，等同意 |
 
 ## 審查紀錄
 - 2026-10-08：端對端測試與隨機剪輯測試找到並修正一整類「交叉淡化邊界」問題（波紋刪除／修剪／變速沒有帶動淡入的下一段、
@@ -72,3 +80,20 @@
     警告 121 則，全部來自測試程式用舊式建構子建立 `QDragEnterEvent`／`QDragMoveEvent`（新版 PySide6 標為棄用），軟體本身沒有棄用警告。
   - 已知的小問題（沒修）：編輯後又做相反的編輯、內容回到存檔時的樣子，標題仍顯示「未儲存」（髒標記以編輯次數計，不是比對內容）；
     「記錄技術檢查結果」是一個復原步驟（Ctrl+Z 會先復原那筆紀錄）；自動剪輯對話框預設 1000×720（最小 900×640），在很小的螢幕上可能超出（沒實測）。
+
+### 交接：HL-1 / SUBS-1 / LONG-1　作者：Claude（2026-10-13）
+- 改了什麼：
+  - `autoedit/highlights.py`（新）：句子切分、爆點分數（用詞＋語氣−水詞）、視窗索引、水詞／疊字、文字來源（字幕檔 > 同名字幕 > 語音辨識）。
+  - `autoedit/scoring.py`：`keywords` 換成 `content`（0.42）＋`content_hook`（0.10）；沒文字時其餘權重比例與改版前相同。
+  - `autoedit/llm_judge.py`（新，選用）：Claude 逐句評分，只送字幕文字；快取；任何失敗退回本機規則。
+  - `autoedit/longform.py`（新）、`analysis/speakers.py`（新）、`LongformParams`、`propose_longform`、審核規則 `longform.zoom`。
+  - `autoedit/subtitle_gen.py`（新）：一鍵字幕。CLI：`longform`、`subtitle`、`shorts --subs/--highlight`。
+  - GUI：「長片精華…」（選單、工具列、素材庫右鍵）、對話框的「找重點」區（字幕檔、一鍵產生字幕、AI 判斷與金鑰、狀態說明）；
+    修正設定頁捲動區裡換行的提示文字被裁掉（QScrollArea 不考慮 height-for-width）。
+  - `Setup-AutoCut.bat -WithAI`、`requirements-ai.txt`、`pyproject` extra `ai`；`scripts/windows/Codex-Task.ps1`（新）、`Codex-Review.ps1 -Paths`、`docs/CODEX_TASKS.md`。
+- 為什麼：使用者試用後回報短影音「重點沒抓到、很無聊」，並要求第二個功能「長影片自動剪輯（重點＋去水詞）＋兩人以上對談時講者自動放大」。
+- 驗證：見各列「驗收／證據」；完整測試結果見下方。過程中自己抓到並修正：浮點雜訊被百分位排名放大成名次差、`tighten_ranges` 不剪段落開頭的水詞、
+  每人各自正規化讓「一直講」和「都沒講」無法分辨、疊字（聊聊）被當成口吃、清除 AI 金鑰沒有從環境變數移除、提示文字被裁掉。
+- 沒驗證／已知限制：真實影片的選段品質、真實訪談的講者判斷（只用合成畫面與替身人臉偵測器）、真實 faster-whisper、真實 Claude API 回應
+  （只驗證了 SDK 1.13 能組出請求、用假客戶端測流程）、Windows 實機、`Codex-Task.ps1` 只在 Linux 的 PowerShell 7.4 做過語法解析與 `-DryRun`。
+- 想請審查者特別看：`docs/CODEX_TASKS.md` CODEX-1 列出的五點。

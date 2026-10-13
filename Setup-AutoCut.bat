@@ -2,6 +2,7 @@
 rem AutoCut Studio one-time setup (creates .venv, installs packages, downloads ffmpeg, adds a desktop shortcut).
 rem Add "-WithSpeech" after the file name to also install speech recognition (captions), e.g. from a terminal:
 rem     Setup-AutoCut.bat -WithSpeech
+rem Add "-WithAI" to also install the optional AI highlight judge (needs a Claude API key), e.g. Setup-AutoCut.bat -WithSpeech -WithAI
 rem Exit code of the setup script: 0 done, 1 stopped by an error, 2 done but ffmpeg is missing, 3 done but tests failed.
 setlocal
 cd /d "%~dp0"

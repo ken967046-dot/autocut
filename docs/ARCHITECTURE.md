@@ -72,7 +72,9 @@
 7. `live.py`（GUI 用）：OpenCV 即時合成預覽，與渲染共用 `core/geometry.py` 的取景數學。
 
 ## 自動剪輯（`analysis/`、`autoedit/`）
-見 `docs/AUTOEDIT_METHOD.md`。流程：`analyze` → `propose_shorts / propose_assemble`（得到 `EditPlan`，純資料）→ `audit_plan`（得到綁定計畫雜湊與專案 revision 的 `AuditReceipt`）
+見 `docs/AUTOEDIT_METHOD.md`。三種計畫：`shorts`（長片 → 多支 9:16）、`longform`（一支長片 → 精華長片：重點＋去水詞＋講者特寫，§3d）、
+`assemble`（多支毛片 → 一支長片）。挑段依「說了什麼」（`autoedit/highlights.py`，§3b；文字來自字幕檔／同名字幕／語音辨識，選用 AI 判斷）。
+流程：`analyze`（＋長片的 `analysis/speakers.py`）→ `propose_shorts / propose_longform / propose_assemble`（得到 `EditPlan`，純資料）→ `audit_plan`（得到綁定計畫雜湊與專案 revision 的 `AuditReceipt`）
 → `apply_plan`（以單一復原步驟把序列加入專案，並記錄 `meta["ai_runs"]`）→ 渲染 → 技術 QA → 使用者按「我已審片」。
 
 ## 介面（`gui/`）

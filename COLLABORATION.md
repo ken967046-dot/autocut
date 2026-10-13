@@ -9,7 +9,7 @@
 | **Codex（實作者／審查者）** | 依 `TASKS.md` 的獨立任務實作（例如 GUI 細節、分析演算法、Windows 打包）；審查 Claude 的 diff，專找 bug、邊界條件、Windows 相容性 | 改動 `core/ops.py` 的既有行為、改變計畫/收據的雜湊規則（需先在 TASKS 提案） |
 | **使用者** | 驗收、審片（`human_review`）、決定取捨 | — |
 
-> 實際狀態（2026-10-06）：雲端工作環境的組織網路政策擋住 `auth.openai.com`／`api.openai.com`，Codex 在那裡無法登入。
+> 實際狀態（2026-10-06，2026-10-13 再確認一次：`api.openai.com` 仍回 403）：雲端工作環境的組織網路政策擋住 `auth.openai.com`／`api.openai.com`，Codex 在那裡無法登入。
 > 因此首輪交叉審查由「全新上下文的 Claude 審查員」完成並明確標示；Codex 審查請在使用者自己的 Windows 電腦上進行（見下方「在你的電腦上跑 Codex」）。
 
 ## 工作迴圈
@@ -48,6 +48,10 @@
 2. 在專案資料夾開 PowerShell：`.\scripts\windows\Codex-Review.ps1`（對目前分支相對 `main` 做審查，輸出到 `.codex-runs\`）。
 3. 或手動：`codex` 進入互動模式，貼上上面的「審查範本」；Codex 會自動讀取本專案的 `AGENTS.md`。
 4. 把審查結果貼回 `TASKS.md` 對應任務，交給 Claude 修正。
+5. **讓 Codex 當實作者**（一張任務卡一回合，省額度）：`.\scripts\windows\Codex-Task.ps1 -List` 看任務卡（`docs/CODEX_TASKS.md`），
+   `.\scripts\windows\Codex-Task.ps1 -Task CODEX-2` 讓 Codex 在 `codex/CODEX-2` 分支上做，完成後在 `TASKS.md` 留交接說明，再交給 Claude 審查合併。
+6. **額度不夠時**：審查只看改動的檔案（`Codex-Review.ps1 -Paths a.py,b.py`），任務卡已列出要讀的檔案、提示裡也要求不要多讀；
+   一次只跑一張卡，先跑 CODEX-1（唯讀審查）。
 
 ## 誠實記錄
 - 每次交付都要分開列「已驗證」「未驗證」。
