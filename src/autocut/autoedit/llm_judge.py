@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import threading
 from typing import Optional
 
@@ -58,19 +57,24 @@ SCHEMA = {
 }
 
 
-_SECRET = re.compile(r"(sk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|x-api-key\S*\s*\S+)", re.IGNORECASE)
-
-
 def _safe(exc: BaseException) -> str:
-    """An error text that can go into ``plan.notes`` (which is saved in the project): API keys, tokens and the configured
-    key itself are masked; at most 120 characters."""
-    text = f"{type(exc).__name__}: {exc}"
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
-        val = os.environ.get(name) or ""
-        if len(val) >= 6:
-            text = text.replace(val, "***")
-    text = _SECRET.sub("***", text)
-    return text[:120]
+    """A FIXED, secret-free description of an error for ``plan.notes`` (saved in the project file).  The exception's own
+    text is never used: any formatting of it could carry an API key or token (REVIEW-3, Codex)."""
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return f"金鑰無效或沒有權限（HTTP {status}）"
+    if status == 429:
+        return "超過額度或請求太頻繁（HTTP 429）"
+    if isinstance(status, int) and status >= 500:
+        return f"AI 服務暫時無法使用（HTTP {status}）"
+    if isinstance(status, int):
+        return f"請求被拒絕（HTTP {status}）"
+    name = type(exc).__name__
+    if "Connection" in name or "Timeout" in name:
+        return "網路連線失敗或逾時"
+    if isinstance(exc, (ValueError, KeyError, TypeError)):
+        return "AI 回覆的格式不正確"
+    return f"錯誤類型 {name}"
 
 
 def available() -> tuple[bool, str]:

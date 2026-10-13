@@ -287,3 +287,16 @@ def test_ai_judge_client_init_failure_and_secret_free_notes(tmp_path, monkeypatc
     notes = []
     lj.judge_sentences(hl.sentences([{"start": 0, "end": 1, "text": "洩漏測試"}]), notes=notes, client=client)
     assert "SECRET" not in " ".join(notes) and "改用本機規則" in notes[-1]
+    # any key format, with no environment variable to compare against (Codex re-check): the text is never kept
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def leak2(**kw):
+        raise RuntimeError("api_key=customToken123")
+    client2 = types.SimpleNamespace(beta=types.SimpleNamespace(messages=types.SimpleNamespace(stream=leak2)))
+    notes = []
+    lj.judge_sentences(hl.sentences([{"start": 0, "end": 1, "text": "洩漏測試二"}]), notes=notes, client=client2)
+    assert "customToken123" not in " ".join(notes) and "RuntimeError" in notes[-1]
+
+    class Http(Exception):
+        status_code = 401
+    assert "金鑰無效" in lj._safe(Http("x")) and "429" in lj._safe(type("R", (Exception,), {"status_code": 429})())
