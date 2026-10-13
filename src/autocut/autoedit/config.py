@@ -56,7 +56,10 @@ class ShortsParams(_Base):
     min_gap_between: float = 8.0        # shorts proposed from the same source start at least this far apart
     music_path: str = ""                # optional background music file
     music_gain_db: float = -20.0
-    use_speech: bool = True             # use the transcript to pick sentence-aligned cut points
+    use_speech: bool = True             # use the transcript (speech recognition) to pick cut points
+    transcript_file: str = ""           # .srt/.vtt/.ass whose TEXT decides the highlights (else: same-name file next to
+                                        # the video, else speech recognition); see autoedit/highlights.py
+    highlight_engine: str = "local"     # local (offline rules) | claude (opt-in: sends the subtitle TEXT only)
 
 
 @dataclass
@@ -81,6 +84,35 @@ class AssembleParams(_Base):
     caption_file: str = ""
     language: str = "zh"
     traditional_chinese: bool = True
+
+
+@dataclass
+class LongformParams(_Base):
+    """One long talk video -> a tighter long video: highlights + filler words removed + speaker close-ups."""
+    mode: str = "highlights"            # highlights (keep the best parts) | clean (keep everything, only remove fillers/pauses)
+    keep_ratio: float = 0.5             # highlights: share of the talking to keep (0.1-1.0)
+    target_seconds: float = 0.0         # highlights: >0 overrides keep_ratio with a target length
+    remove_fillers: bool = True         # 嗯/呃/那個… (needs word timings from speech recognition)
+    remove_stutters: bool = True        # 我我我 -> 我
+    tighten: bool = True                # long pauses keep only ``pause_keep`` seconds
+    pause_min: float = 0.6
+    pause_keep: float = 0.3
+    silence_db: float = -38.0
+    speaker_zoom: bool = True           # two or more people: zoom into whoever talks for >= zoom_min_turn seconds
+    zoom_min_turn: float = 3.0
+    zoom_max: float = 12.0              # a close-up longer than this goes back to the wide shot at a sentence boundary
+    zoom_back_min: float = 2.0          # the wide shot between two close-ups lasts at least this long
+    zoom_level: float = 0.0             # 0 = from the face size; else a fixed zoom factor (1.2-3.0)
+    width: int = 0                      # 0 = the source size
+    height: int = 0
+    fps: float = 0.0                    # 0 = the source rate (24-60)
+    captions: str = "off"               # off | auto | file
+    caption_file: str = ""
+    transcript_file: str = ""           # .srt/.vtt/.ass whose text decides the highlights (else same-name file / speech)
+    language: str = "zh"
+    traditional_chinese: bool = True
+    use_speech: bool = True             # speech recognition (word timings: filler removal, clean cut points)
+    highlight_engine: str = "local"     # local | claude (opt-in, sends the subtitle text only)
 
 
 @dataclass

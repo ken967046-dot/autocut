@@ -1,0 +1,3 @@
+# 選用：讓 AI（Claude）判斷影片的爆點。只會傳送字幕文字與時間碼，不會上傳影片或聲音；需要 API 金鑰與網路。
+-r requirements.txt
+anthropic>=1.0

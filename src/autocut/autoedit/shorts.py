@@ -16,6 +16,7 @@ from ..core.plan import EditPlan
 from ..core.project import Asset, CaptionStyle, Clip, Project, Sequence, Transform
 from ..core.timecode import frame_of, snap_time
 from ..util import IdGen, sha256_hex
+from . import highlights as hl
 from . import scoring as sc
 from .api import AutoEditError, Cancelled
 from .captions import Piece, _reading_chars, cues_for_pieces, source_segments
@@ -262,6 +263,14 @@ def _music_asset(proj: Project, params: ShortsParams, notes: list[str]) -> tuple
 def _why(info: dict, sh: _Short, band: sc.Band, feat: sc.Feat, has_music: bool) -> str:
     st, parts = info.get("stats", {}), info.get("parts", {})
     bits: list[str] = []
+    if len(feat.content):
+        t0, t1 = float(info.get("t0", 0.0)), float(info.get("t1", 0.0))
+        best = feat.content.best_in(t0, t1, 2)
+        if best:
+            lines = "；".join(f"「{hl.quote(u.text)}」（{u.reasons() or '語氣'}，{u.score:.2f}）" for u in best)
+            bits.append(f"爆點句：{lines}")
+        if "content_hook" in st:
+            bits.append("開頭 3 秒就有金句" if st["content_hook"] >= 0.5 else "開頭 3 秒內容普通")
     sk, ek = info.get("start_kind", ""), info.get("end_kind", "")
     start_txt = {"sentence": "上一句結束之後（句首）", "silence": "停頓之後", "scene": "鏡頭切換處", "grid": "固定間隔點（附近沒有更好的邊界）",
                  "edge": "素材開頭"}.get(sk, sk)
@@ -289,6 +298,8 @@ def _why(info: dict, sh: _Short, band: sc.Band, feat: sc.Feat, has_music: bool) 
         bits.append(f"{st['face_ratio']:.0%} 的取樣有人臉")
     if st.get("kw_hits"):
         bits.append(f"含 {int(st['kw_hits'])} 個重點詞")
+    elif not len(feat.content):
+        bits.append("沒有字幕／逐字稿，無法判斷內容爆點")
     bits.append(f"長度 {sh.length:.1f} 秒（目標 {band.target:g} 秒，長度帶 {band.lo:g}–{band.hi:g} 秒）")
     return "；".join(bits) + "。"
 
@@ -315,24 +326,22 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     notes.extend(str(n) for n in (ev.notes or []))
     rep(0.8, "整理逐字稿與字幕來源…")
 
-    # caption source (source seconds) and the transcript that guides the cut points
+    # the transcript that decides WHAT is a highlight (subtitle file > same-name file next to the video > speech)
+    tfile = params.transcript_file or (params.caption_file if params.captions == "file" else "")
+    plan_segments, tinfo = hl.choose_transcript(asset, ev, tfile, use_speech=bool(params.use_speech), notes=notes)
+    # caption source (source seconds)
     cap_segments: Optional[list] = None
     if params.captions == "auto":
         if ev.speech is not None:
             cap_segments = [dict(s) for s in ev.speech]
+        elif plan_segments:
+            cap_segments = plan_segments
+            notes.append("沒有語音辨識逐字稿，字幕改用字幕檔的文字。")
         else:
             notes.append("沒有逐字稿，所以沒有加字幕（語音辨識是選用功能；原因見上方說明）。")
     elif params.captions == "file":
         cap_segments = source_segments(asset, ev, "file", params.caption_file, language=params.language,
                                        traditional=bool(params.traditional_chinese), notes=notes, cancel=cancel)
-    plan_segments: Optional[list] = None
-    if params.use_speech:
-        if ev.speech is not None:
-            plan_segments = [dict(s) for s in ev.speech]
-        elif params.captions == "file" and cap_segments:
-            plan_segments = cap_segments
-        else:
-            notes.append("沒有逐字稿，剪點只依停頓、鏡頭切換與固定間隔挑選，不保證落在句子邊界。")
     if not ev.has_audio and not feat_has_audio(ev):
         notes.append("素材沒有聲音：人聲、響度、開頭鉤子與停頓緊湊化都無法使用，評分改看動作量與畫面。")
     if params.reframe == "face" and not any(ev.faces or []):
@@ -342,7 +351,10 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     # ---------------------------------------------------------------- 2. band
     band = sc.plan_band(params)
     notes.extend(band.notes)
-    feat = sc.Feat(ev, plan_segments)
+    overrides, judge_info = _judge(params, plan_segments, notes, cancel)
+    feat = sc.Feat(ev, plan_segments, overrides)
+    if not feat.words:                                      # subtitle-file text + speech-recognition word timings
+        feat.words = sc.transcript_words(hl.word_segments(ev))
     dur = float(ev.duration or asset.duration)
     weights = dict(sc.DEFAULT_WEIGHTS)
     weights.update({k: float(v) for k, v in (getattr(params, "weights", None) or {}).items() if k in weights})
@@ -412,6 +424,9 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         info = sh.info
         t_first, t_last = sh.pieces[0].a, sh.pieces[-1].b
         name = f"短影音 {rank}｜{_mmss(t_first)}–{_mmss(t_last)}"
+        best = feat.content.best_in(t_first, t_last, 1) if len(feat.content) else []
+        if best:
+            name += f"｜{hl.quote(best[0].text, 12)}"
         seq = Sequence.create(name, int(params.width), int(params.height), fps, video_tracks=2, audio_tracks=2,
                               seq_id=ids("s"))
         for tr in list(seq.video_tracks) + list(seq.audio_tracks):          # Sequence.create randomises track ids
@@ -500,6 +515,9 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
             "id": ids("d"), "kind": "short", "sequence": sid, "score": _f(score),
             "source": {"asset_id": asset.id, "t0": _f(t_first), "t1": _f(t_last)},
             "summary": summary, "why": _why(info, sh, band, feat, music is not None),
+            "highlights": [{"t0": _f(u.start), "t1": _f(u.end), "text": u.text, "score": _f(u.score),
+                            "tags": list(u.tags[:3])} for u in (feat.content.best_in(t_first, t_last, 3)
+                                                                if len(feat.content) else [])],
             "evidence": {"parts": {k: _f(v) for k, v in info.get("parts", {}).items()},
                          "weights": {k: _f(v) for k, v in (pool.weights if pool is not None else {}).items()},
                          "start_kind": info.get("start_kind", ""), "end_kind": info.get("end_kind", ""),
@@ -567,6 +585,7 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         "first_cut_max": _f(params.first_cut_max), "min_gap_between": _f(params.min_gap_between),
         "language": params.language, "use_speech": bool(params.use_speech), "asset_id": asset.id,
         "weights": {k: _f(v) for k, v in weights.items()},
+        "transcript": tinfo, "highlight_engine": judge_info,
         "weights_used": {k: _f(v) for k, v in (pool.weights if pool is not None else {}).items()},
         "params": params.to_dict(),
     }
@@ -576,6 +595,17 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     rep(1.0, "完成")
     return EditPlan(kind="shorts", brief=brief, sources=sources, assets=plan_assets, sequences=sequences,
                     decisions=decisions, notes=_dedupe(notes))
+
+
+# ------------------------------------------------------------------------------------ highlight judge
+def _judge(params, segments: Optional[list], notes: list[str], cancel) -> tuple[Optional[dict], dict]:
+    """Optional language-model judge of the sentences (opt-in).  Returns ``(overrides for score_sentences, info)``."""
+    engine = str(getattr(params, "highlight_engine", "local") or "local")
+    if engine == "local" or not segments:
+        return None, {"engine": "local"}
+    from .llm_judge import judge_sentences
+    units = hl.sentences(segments)
+    return judge_sentences(units, engine=engine, language=params.language, notes=notes, cancel=cancel)
 
 
 # ------------------------------------------------------------------------------------ decision texts

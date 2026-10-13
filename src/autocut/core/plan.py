@@ -51,7 +51,7 @@ class Finding:
 
 @dataclass
 class EditPlan:
-    kind: str                                  # shorts | assemble
+    kind: str                                  # shorts | assemble | longform
     brief: dict = field(default_factory=dict)  # user settings + thresholds actually used
     sources: list = field(default_factory=list)      # [{asset_id, name, fingerprint, duration, evidence_sha256}]
     assets: list = field(default_factory=list)       # Asset.to_dict() of files the plan needs that the project lacks (music)

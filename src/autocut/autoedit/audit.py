@@ -514,6 +514,25 @@ def _r_total_max(c: _Ctx) -> None:
 
 
 # order = the order of the rule table in the spec (so findings come out grouped and deterministic)
+def _r_longform_zoom(c: _Ctx) -> None:
+    """Long-video close-ups: too short to read as a camera change, or zoomed so far that a small source turns soft."""
+    if c.plan.kind != "longform":
+        return
+    for seq in c.seqs:
+        for t in seq.video_tracks:
+            for clip in t.clips:
+                if clip.transform.zoom <= 1.0 + 1e-6:
+                    continue
+                if clip.duration < 1.0 - EPS:
+                    c.add("longform.zoom", WARN, f"講者特寫只有 {clip.duration:.2f} 秒，太短會像畫面閃一下", f"{seq.id}/{clip.id}")
+                a = c.view.assets.get(clip.asset_id)
+                if a is not None and a.width and a.height:
+                    eff = min(a.width, a.height) / clip.transform.zoom
+                    if eff < 0.5 * min(seq.width, seq.height):
+                        c.add("longform.zoom", WARN, f"特寫放大 {clip.transform.zoom:g} 倍後只剩約 {eff:.0f} 像素高，"
+                                                     f"輸出 {seq.height}p 時會明顯模糊", f"{seq.id}/{clip.id}")
+
+
 _RULES: list[tuple[str, Callable[[_Ctx], None]]] = [
     ("plan.empty", _r_plan_empty), ("plan.hash", _r_plan_hash),
     ("source.missing", _r_source_missing), ("source.file", _r_source_file), ("source.changed", _r_source_changed),
@@ -523,6 +542,7 @@ _RULES: list[tuple[str, Callable[[_Ctx], None]]] = [
     ("caption.reading", _r_caption_reading), ("caption.rate", _r_caption_rate), ("caption.overlap", _r_caption_overlap),
     ("caption.short", _r_caption_short), ("caption.long", _r_caption_long), ("caption.range", _r_caption_range),
     ("assemble.target", _r_assemble_target), ("assemble.unused", _r_assemble_unused),
+    ("longform.zoom", _r_longform_zoom),
     ("start.black", _r_start_black), ("total.max", _r_total_max),
 ]
 

@@ -209,16 +209,19 @@ def test_hook_and_missing_components_are_reweighted():
     hook, ts = pool.parts["hook"], pool.ts
     quiet, loud = (ts >= 1.0) & (ts < 36.0), (ts >= 41.0) & (ts < 76.0)
     assert quiet.any() and loud.any() and hook[loud].min() > hook[quiet].max()   # loud + face at the start beats the quiet part
-    assert pool.available["keywords"] is False and "keywords" not in pool.weights
+    assert pool.available["content"] is False and "content" not in pool.weights and "content_hook" not in pool.weights
     assert sum(pool.weights.values()) == pytest.approx(1.0)
+    # without text the remaining weights keep their old relative sizes (voice : hook : complete = 0.22 : 0.18 : 0.18)
+    assert pool.weights["voice"] / pool.weights["hook"] == pytest.approx(0.22 / 0.18, rel=0.01)
     # no audio track: voice falls back to motion, energy / hook-onset are not used
     ev2 = fake_ev(120.0, audio=False)
     _p2, _b2, _f2, pool2 = make_pool(ev2)
     assert pool2.available["voice"] and not pool2.available["energy"] and len(pool2) > 0
-    # keywords count when a transcript exists
+    # content counts (and dominates) when a transcript exists
     ev3 = fake_ev(120.0, speech=True)
     _p3, _b3, _f3, pool3 = make_pool(ev3)
-    assert pool3.available["keywords"] and float(pool3.stats["kw_hits"].max()) >= 3
+    assert pool3.available["content"] and float(pool3.stats["kw_hits"].max()) >= 3
+    assert pool3.weights["content"] + pool3.weights["content_hook"] > 0.5
 
 
 def test_select_windows_accept_can_veto():
@@ -549,7 +552,8 @@ def test_plan_shorts_with_fake_evidence_is_valid_deterministic_and_explained(sou
     # the source ranges of different shorts do not overlap and are >= min_gap apart
     ranges = sorted((d["source"]["t0"], d["source"]["t1"]) for d in short)
     assert all(b0 >= a1 + params.min_gap_between - 0.1 for (_a0, a1), (b0, _b1) in zip(ranges, ranges[1:]))
-    assert plan.brief["platform"] == "ig_reels" and plan.brief["weights"]["voice"] == 0.22
+    assert plan.brief["platform"] == "ig_reels" and plan.brief["weights"]["voice"] == 0.11
+    assert plan.brief["transcript"]["source"] == "speech" and plan.brief["weights"]["content"] == 0.42
     # untouched project
     assert proj.revision == 0 and len(proj.sequences) == 1
 

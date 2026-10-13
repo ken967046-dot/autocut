@@ -19,7 +19,7 @@ from ..core.editor import Editor
 from ..core.plan import AuditReceipt, EditPlan, PlanError, check_receipt, record_run
 from ..core.project import Asset, Project, Sequence, validate_sequence
 
-KIND_LABEL = {"shorts": "短影音", "assemble": "長片組裝"}
+KIND_LABEL = {"shorts": "短影音", "assemble": "長片組裝", "longform": "長片精華"}
 
 
 # ------------------------------------------------------------------------------------------------ ids

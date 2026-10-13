@@ -23,12 +23,17 @@ import numpy as np
 
 from .captions import _CLOSERS, _is_punct, _is_strong, _timed_chars
 from .config import PLATFORM_RULES, ShortsParams, resolve_band
+from .highlights import ContentIndex, score_sentences, sentences
 from .reframe import _faces_at, _ran
 
-DEFAULT_WEIGHTS: dict[str, float] = {"voice": 0.22, "energy": 0.10, "motion": 0.10, "faces": 0.10, "hook": 0.18,
-                                     "complete": 0.18, "keywords": 0.04, "length": 0.05, "quality": 0.03}
+# What was SAID dominates when a transcript / subtitle file exists ("content" + "content_hook" = 52 %).  Without text
+# those two are unavailable and the remaining weights are renormalised -- they keep exactly the old relative sizes.
+DEFAULT_WEIGHTS: dict[str, float] = {"voice": 0.11, "energy": 0.05, "motion": 0.05, "faces": 0.05, "hook": 0.09,
+                                     "complete": 0.09, "content": 0.42, "content_hook": 0.10, "length": 0.025,
+                                     "quality": 0.015}
 WEIGHT_LABELS = {"voice": "人聲占比", "energy": "響度", "motion": "動作量", "faces": "人臉", "hook": "開頭鉤子",
-                 "complete": "起訖完整", "keywords": "重點詞", "length": "長度貼近目標", "quality": "畫質"}
+                 "complete": "起訖完整", "content": "內容爆點", "content_hook": "開頭金句", "length": "長度貼近目標",
+                 "quality": "畫質"}
 KIND_LABEL = {"sentence": "句末", "silence": "靜音處", "scene": "鏡頭切換處", "grid": "固定間隔點", "edge": "素材頭尾"}
 KIND_WEIGHT = {"sentence": 1.0, "silence": 0.7, "scene": 0.5, "grid": 0.1, "edge": 0.7}
 
@@ -142,7 +147,7 @@ def inside_word(t: float, words: Sequence[tuple[float, float]], margin: float = 
 class Feat:
     """Numpy view of an Evidence: arrays, prefix sums and speech onset / offset lookups."""
 
-    def __init__(self, ev, segments: Optional[Sequence[dict]] = None) -> None:
+    def __init__(self, ev, segments: Optional[Sequence[dict]] = None, content_overrides: Optional[dict] = None) -> None:
         self.ev = ev
         self.afps = float(getattr(ev, "audio_fps", 0.0) or 20.0)
         self.vfps = float(getattr(ev, "visual_fps", 0.0) or 5.0)
@@ -214,6 +219,9 @@ class Feat:
         order = np.argsort(mids) if mids else np.zeros(0, dtype=int)
         self.kw_t = np.asarray(mids, dtype=np.float64)[order] if mids else np.zeros(0)
         self.kw_cum = _prefix(np.asarray(hits, dtype=np.float64)[order]) if mids else np.zeros(1)
+        # content ("爆點") of every sentence: what was said + how it was said (autoedit.highlights)
+        self.units = score_sentences(sentences(segs), self, content_overrides) if segs else []
+        self.content = ContentIndex(self.units)
 
     # ---- index helpers (vectorised)
     def a_idx(self, t):
@@ -624,18 +632,19 @@ def search_windows(feat: Feat, params: ShortsParams, band: Band, weights: Option
     stats["start_w"], stats["end_w"] = w_s, w_e
     avail["complete"] = True
 
-    if feat.has_text and feat.kw_t.size:
-        hits = feat.kw_cum[np.searchsorted(feat.kw_t, te, side="right")] - feat.kw_cum[np.searchsorted(feat.kw_t, ts, side="right")]
-        dens = hits / np.maximum(tl / 10.0, 0.5)
-        parts["keywords"] = np.minimum(1.0, dens / 2.0)
+    if feat.has_text and len(feat.content):
+        cw = feat.content.window(ts, te)
+        # richness of the whole window (relative to this video's rich sentences) + its single best moment (absolute):
+        # a short needs at least one real highlight, and more is better
+        parts["content"] = np.clip(0.5 * np.minimum(cw["mean"] / feat.content.rich, 1.0) + 0.5 * cw["peak"], 0.0, 1.0)
+        parts["content_hook"] = np.clip(cw["hook"], 0.0, 1.0)
+        stats["content_mean"], stats["content_peak"], stats["content_hook"] = cw["mean"], cw["peak"], cw["hook"]
+        hits = feat.kw_cum[np.searchsorted(feat.kw_t, te, side="right")] - feat.kw_cum[np.searchsorted(feat.kw_t, ts, side="right")] \
+            if feat.kw_t.size else np.zeros(n)
         stats["kw_hits"] = hits
-        avail["keywords"] = True
-    elif feat.has_text:
-        parts["keywords"] = np.zeros(n)
-        stats["kw_hits"] = np.zeros(n)
-        avail["keywords"] = True
+        avail["content"] = avail["content_hook"] = True
     else:
-        avail["keywords"] = False
+        avail["content"] = avail["content_hook"] = False
 
     parts["length"] = np.clip(1.0 - np.abs(tight - band.target) / max(band.target - band.lo, band.hi - band.target, 1.0), 0.0, 1.0)
     avail["length"] = True

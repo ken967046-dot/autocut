@@ -15,7 +15,7 @@ from ..core.editor import Editor
 from ..core.plan import AuditReceipt, EditPlan
 from ..core.project import Asset, Project, Sequence
 from ..media.ffmpeg import Cancelled          # one cancel exception for ffmpeg work *and* planning (re-exported)
-from .config import AssembleParams, AuditRules, ShortsParams
+from .config import AssembleParams, AuditRules, LongformParams, ShortsParams
 
 ProgressCb = Callable[[float, str], None]
 
@@ -36,6 +36,13 @@ def propose_assemble(proj: Project, asset_ids: Sequence[str], params: AssemblePa
     """Plan one long video from many raw clips (a single sequence in the plan)."""
     from .assemble import plan_assemble
     return plan_assemble(proj, list(asset_ids), params or AssembleParams(), progress, cancel)
+
+
+def propose_longform(proj: Project, asset_id: str, params: LongformParams | None = None,
+                     progress: Optional[ProgressCb] = None, cancel: Optional[threading.Event] = None) -> EditPlan:
+    """Plan a tighter long video from one long talk video: highlights + filler words removed + speaker close-ups."""
+    from .longform import plan_longform
+    return plan_longform(proj, asset_id, params or LongformParams(), progress, cancel)
 
 
 def audit_plan(plan: EditPlan, proj: Project, rules: AuditRules | None = None) -> AuditReceipt:
