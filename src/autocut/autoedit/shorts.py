@@ -354,7 +354,7 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     overrides, judge_info = _judge(params, plan_segments, notes, cancel)
     feat = sc.Feat(ev, plan_segments, overrides)
     if not feat.words:                                      # subtitle-file text + speech-recognition word timings
-        feat.words = sc.transcript_words(hl.word_segments(ev))
+        feat.words = sc.transcript_words(hl.word_segments(ev, asset))
     dur = float(ev.duration or asset.duration)
     weights = dict(sc.DEFAULT_WEIGHTS)
     weights.update({k: float(v) for k, v in (getattr(params, "weights", None) or {}).items() if k in weights})

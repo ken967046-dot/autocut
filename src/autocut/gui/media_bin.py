@@ -8,6 +8,7 @@ files and folders dropped from the OS go to ``importer.import_paths``.  Thumbnai
 Signals
     shortsRequested(str asset_id)       context menu 「自動剪成短影音…」 (the window opens the dialog)
     assembleRequested(list asset_ids)   context menu 「自動合併成長片…」
+    longformRequested(str asset_id)     context menu 「長片精華…」
     importRequested()                   the 「匯入…」 button (the window owns the file dialog)
     importStarted(object runner)        an OS drop started an import (the window shows its progress)
     assetSelectionChanged()             the selected assets changed
@@ -439,6 +440,7 @@ class _AssetList(QListWidget):
 class MediaBin(QWidget):
     shortsRequested = Signal(str)
     assembleRequested = Signal(list)
+    longformRequested = Signal(str)
     importRequested = Signal()
     importStarted = Signal(object)
     assetSelectionChanged = Signal()
@@ -713,6 +715,8 @@ class MediaBin(QWidget):
         add("加入時間軸", lambda: self.importer.place_assets(ids))
         add("自動剪成短影音…", lambda: self.shortsRequested.emit(videos[0]), single and len(videos) == 1,
             "選取 1 支影片時可用")
+        add("長片精華…", lambda: self.longformRequested.emit(videos[0]), single and len(videos) == 1,
+            "選取 1 支影片時可用：留重點、剪水詞、說話的人自動放大")
         add("自動合併成長片…", lambda: self.assembleRequested.emit(list(videos)), len(videos) >= 2,
             "選取 2 支以上影片時可用")
         menu.addSeparator()

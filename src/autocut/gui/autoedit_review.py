@@ -54,7 +54,7 @@ def sorted_findings(findings: list[Finding]) -> list[Finding]:
 class Candidate:
     index: int                                   # position in ``plan.sequences``
     seq_id: str
-    kind: str                                    # shorts | assemble
+    kind: str                                    # shorts | assemble | longform
     name: str
     duration: float
     score: Optional[float] = None
@@ -81,11 +81,17 @@ class Candidate:
             if self.score is not None:
                 bits.append(f"分數 {self.score:.2f}")
             return f"<b>第 {number} 支</b>　<span style='color:{dim}'>{html.escape(' · '.join(bits))}</span>"
+        if self.kind == "longform":
+            bits = [f"成品 {clock(self.duration)}", f"{self.clips} 個片段"]
+            if self.src_range:
+                bits.insert(0, f"原片 {clock(self.src_range[0])}–{clock(self.src_range[1])}")
+            return f"<b>精華長片</b>　<span style='color:{dim}'>{html.escape(' · '.join(bits))}</span>"
         bits = [f"{clock(self.duration)}", f"{self.clips} 個鏡頭", f"用到 {self.sources} 支素材"]
         return f"<b>合併後的長片</b>　<span style='color:{dim}'>{html.escape(' · '.join(bits))}</span>"
 
 
-DETAIL_KINDS = {"shorts": ("reframe", "tighten", "caption", "music"), "assemble": ("format", "audio", "music", "caption")}
+DETAIL_KINDS = {"shorts": ("reframe", "tighten", "caption", "music"), "assemble": ("format", "audio", "music", "caption"),
+                "longform": ("filler", "zoom", "caption")}
 
 
 def _crop_of(asset: Optional[Asset], seq: Sequence, clip, t_src: float) -> Optional[tuple[float, float, float, float]]:
@@ -117,6 +123,8 @@ def build_candidates(plan: EditPlan, assets: dict[str, Asset]) -> list[Candidate
         why_label = "為什麼選這段"
         if main is None and plan.kind == "assemble":
             main, why_label = next((d for d in decs if d.get("kind") == "order"), None), "排序依據"
+        if main is None and plan.kind == "longform":
+            main, why_label = next((d for d in decs if d.get("kind") == "longform"), None), "怎麼剪的"
         src = (main or {}).get("source") or {}
         rng = None
         try:
@@ -126,11 +134,11 @@ def build_candidates(plan: EditPlan, assets: dict[str, Asset]) -> list[Candidate
             rng = None
         score = (main or {}).get("score")
         why = str((main or {}).get("why") or (main or {}).get("summary") or "")
-        if plan.kind == "assemble" and main is not None and main.get("summary"):
+        if plan.kind in ("assemble", "longform") and main is not None and main.get("summary"):
             why = f"{main['summary']}。{why}".strip()
         details, seen = [], set()
         label = {"reframe": "取景", "tighten": "緊湊化", "caption": "字幕", "music": "配樂", "format": "格式",
-                 "audio": "音量"}
+                 "audio": "音量", "filler": "水詞", "zoom": "講者特寫"}
         for kind in DETAIL_KINDS.get(plan.kind, ()):
             for d in decs:
                 s = str(d.get("summary") or "").strip()

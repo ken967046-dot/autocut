@@ -401,7 +401,7 @@ def menu_actions(win: mw.MainWindow) -> dict[str, QAction]:
 
 SLOTS = ("new_project", "open_project_dialog", "save_project", "save_project_as", "import_dialog",
          "import_folder_dialog", "show_export_dialog", "close", "undo", "redo", "toggle_playback", "render_preview",
-         "toggle_fullscreen", "reset_layout", "open_shorts_dialog", "open_assemble_dialog", "show_about",
+         "toggle_fullscreen", "reset_layout", "open_shorts_dialog", "open_assemble_dialog", "open_longform_dialog", "show_about",
          "show_environment")
 
 
@@ -424,6 +424,7 @@ def test_every_menu_and_toolbar_action_triggers_the_right_method(qapp, make_wind
         "編輯/復原": ("undo",), "編輯/重做": ("redo",),
         "時間軸/播放／暫停": ("toggle_playback",),
         "自動剪輯/自動剪成短影音…": ("open_shorts_dialog",), "自動剪輯/自動合併成長片…": ("open_assemble_dialog",),
+        "自動剪輯/長片精華…": ("open_longform_dialog",),
         "檢視/渲染預覽（含聲音）": ("render_preview",), "檢視/全螢幕": ("toggle_fullscreen",),
         "檢視/重設版面": ("reset_layout",),
         "說明/檢查環境…": ("show_environment",), "說明/關於 AutoCut Studio": ("show_about",),
@@ -490,7 +491,7 @@ def test_toolbar_buttons_edit_the_project(qapp, make_window, real_proj):
     rec = Recorder(st)
     buttons = {a.text(): win.toolbar.widgetForAction(a) for a in win.toolbar.actions() if not a.isSeparator()}
     assert list(buttons) == ["匯入素材", "儲存專案", "復原", "重做", "分割", "刪除", "吸附", "自動剪成短影音…",
-                             "自動合併成長片…", "", "輸出影片"]          # "" is the stretch spacer
+                             "長片精華…", "自動合併成長片…", "", "輸出影片"]          # "" is the stretch spacer
     assert buttons["復原"].isEnabled() and not buttons["重做"].isEnabled()
     st.set_playhead(3.0)
     buttons["分割"].click()

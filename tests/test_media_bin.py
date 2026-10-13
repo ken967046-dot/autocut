@@ -656,7 +656,8 @@ def test_menu_for_one_video_offers_shorts_but_not_assemble(rig):
     b.shortsRequested.connect(shorts.append)
     b.assembleRequested.connect(assembles.append)
     menu = rig.menu_for("land.mp4")
-    assert texts(menu) == ["加入時間軸", "自動剪成短影音…", "自動合併成長片…", "在檔案總管顯示", "重新連結…", "移除素材"]
+    assert texts(menu) == ["加入時間軸", "自動剪成短影音…", "長片精華…", "自動合併成長片…", "在檔案總管顯示", "重新連結…", "移除素材"]
+    assert action(menu, "長片精華…").isEnabled()
     assert action(menu, "自動剪成短影音…").isEnabled() and not action(menu, "自動合併成長片…").isEnabled()
     assert action(menu, "在檔案總管顯示").isEnabled() and action(menu, "重新連結…").isEnabled()
     action(menu, "自動剪成短影音…").trigger()

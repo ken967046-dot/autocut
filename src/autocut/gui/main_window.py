@@ -31,7 +31,7 @@ from ..core.timecode import fmt_timecode
 from ..util import PROJECT_EXT, app_data_dir, atomic_write_text, human_duration
 from . import theme
 from .app import build_app_icon
-from .autoedit_dialog import AssembleDialog, ShortsDialog
+from .autoedit_dialog import AssembleDialog, LongformDialog, ShortsDialog
 from .export_dialog import ExportDialog, safe_stem
 from .importer import ImportController, file_dialog_filter, is_project_file
 from .inspector import InspectorPanel
@@ -664,6 +664,8 @@ class MainWindow(QMainWindow):
         self.act_snap.toggled.connect(lambda on: self.timeline_call("set_snapping", on))
         self.act_shorts = a("自動剪成短影音…", self.open_shorts_dialog)
         self.act_assemble = a("自動合併成長片…", self.open_assemble_dialog)
+        self.act_longform = a("長片精華…", self.open_longform_dialog)
+        self.act_longform.setToolTip("一支長影片 → 精華長片：留重點、剪掉「嗯、呃、那個」、兩人對談時說話的人自動放大")
         self.act_add_vtrack = a("新增視訊軌", lambda: self.add_track("video"))
         self.act_add_atrack = a("新增音訊軌", lambda: self.add_track("audio"))
         self.act_about = a("關於 AutoCut Studio", self.show_about)
@@ -720,7 +722,7 @@ class MainWindow(QMainWindow):
             tl.addAction(act)
 
         auto = bar.addMenu("自動剪輯(&A)")
-        for act in (self.act_shorts, self.act_assemble):
+        for act in (self.act_shorts, self.act_longform, self.act_assemble):
             auto.addAction(act)
 
         view = bar.addMenu("檢視(&V)")
@@ -756,7 +758,7 @@ class MainWindow(QMainWindow):
         for act in (split, delete, self.act_snap):
             tb.addAction(act)
         tb.addSeparator()
-        for act in (self.act_shorts, self.act_assemble):
+        for act in (self.act_shorts, self.act_longform, self.act_assemble):
             tb.addAction(act)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -797,6 +799,7 @@ class MainWindow(QMainWindow):
         bin_ = self.media_bin
         bin_.shortsRequested.connect(self.open_shorts_dialog)
         bin_.assembleRequested.connect(self.open_assemble_dialog)
+        bin_.longformRequested.connect(self.open_longform_dialog)
         bin_.importRequested.connect(self.import_dialog)
         bin_.importStarted.connect(self.track_import)
         self.banner.actionChosen.connect(self._on_banner_action)
@@ -1160,19 +1163,19 @@ class MainWindow(QMainWindow):
         pool = assets.values() if ids is None else [assets[i] for i in ids if i in assets]
         return [a for a in pool if a.kind == "video" and a.has_video]
 
-    def _pick_shorts_source(self) -> Optional[str]:
+    def _pick_shorts_source(self, title: str = "自動剪成短影音") -> Optional[str]:
         """Selected video in the bin, else the only video, else ask which one."""
         picked = self._video_assets(self.media_bin.selected_asset_ids())
         if len(picked) == 1:
             return picked[0].id
         videos = self._video_assets()
         if not videos:
-            inform(self, "自動剪成短影音", "專案裡還沒有影片。\n請先把影片拖進視窗匯入。")
+            inform(self, title, "專案裡還沒有影片。\n請先把影片拖進視窗匯入。")
             return None
         if len(videos) == 1:
             return videos[0].id
         names = [f"{a.name}（{human_duration(a.duration)}）" for a in videos]
-        name, ok = QInputDialog.getItem(self, "自動剪成短影音", "要用哪一支影片？", names, 0, False)
+        name, ok = QInputDialog.getItem(self, title, "要用哪一支影片？", names, 0, False)
         return videos[names.index(name)].id if ok and name in names else None
 
     def open_shorts_dialog(self, asset_id: Optional[str] = None) -> None:
@@ -1180,6 +1183,12 @@ class MainWindow(QMainWindow):
         asset_id = asset_id if isinstance(asset_id, str) and asset_id else self._pick_shorts_source()
         if asset_id:
             self._run_dialog(ShortsDialog(self.state, asset_id, self))
+
+    def open_longform_dialog(self, asset_id: Optional[str] = None) -> None:
+        """「長片精華」 for ``asset_id`` (or the selected / only / chosen video)."""
+        asset_id = asset_id if isinstance(asset_id, str) and asset_id else self._pick_shorts_source("長片精華")
+        if asset_id:
+            self._run_dialog(LongformDialog(self.state, asset_id, self))
 
     def open_assemble_dialog(self, asset_ids: Optional[list[str]] = None) -> None:
         """「自動合併成長片」 for ``asset_ids`` (or the selected videos, else every video in the project)."""

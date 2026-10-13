@@ -1,6 +1,7 @@
-"""Parameter forms of the auto-edit dialogs (GUI_SPEC §6): widgets <-> ``ShortsParams`` / ``AssembleParams``.
+"""Parameter forms of the auto-edit dialogs (GUI_SPEC §6): widgets <-> ``ShortsParams`` / ``AssembleParams`` /
+``LongformParams``.
 
-``ShortsForm`` and ``AssembleForm`` are plain widgets (no task logic): ``set_params(p)`` fills them, ``params()`` reads
+``ShortsForm``, ``AssembleForm`` and ``LongformForm`` are plain widgets (no task logic): ``set_params(p)`` fills them, ``params()`` reads
 them back, ``validate()`` returns a 繁中 problem text (or ""), and ``set_speech_status(...)`` shows the speech-recognition
 hint next to the caption settings.  Every widget is reachable as ``form.w["<field name>"]`` (the dataclass field name).
 The dialog (``autoedit_dialog``) owns the flow; this module owns the look of the settings.
@@ -16,12 +17,16 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QSpinBox, QToolButton,
                                QVBoxLayout, QWidget)
 
-from ..autoedit.config import ASPECTS, PLATFORM_RULES, AssembleParams, ShortsParams, pace_shot_range
+from ..autoedit.config import (ASPECTS, PLATFORM_RULES, AssembleParams, LongformParams, ShortsParams,
+                               pace_shot_range)
 from . import theme
 
 SETTINGS_ORG = SETTINGS_APP = "AutoCutStudio"
 KEY_SHORTS = "autoedit/shorts_params"
 KEY_ASSEMBLE = "autoedit/assemble_params"
+KEY_LONGFORM = "autoedit/longform_params"
+KEY_AI_KEY = "ai/anthropic_api_key"
+AI_PIP_COMMAND = "pip install -r requirements-ai.txt"
 KEY_ADVANCED = "autoedit/advanced_open"
 KEY_LAST_DIR = "autoedit/last_dir"
 PIP_COMMAND = "pip install -r requirements-speech.txt"
@@ -56,6 +61,8 @@ def save_params(key: str, params) -> None:
     if d.get("captions") == "file":
         d["captions"] = "auto" if isinstance(params, ShortsParams) else "off"
     d["caption_file"] = ""
+    if "transcript_file" in d:
+        d["transcript_file"] = ""                        # the subtitle file belongs to one video too
     try:
         s = settings()
         s.setValue(key, json.dumps(d, ensure_ascii=False))
@@ -207,6 +214,43 @@ def _num(value: Any, default: float) -> float:
         return float(default)
 
 
+def saved_ai_key() -> str:
+    try:
+        return str(settings().value(KEY_AI_KEY, "") or "")
+    except Exception:                                    # noqa: BLE001
+        return ""
+
+
+def apply_saved_ai_key() -> bool:
+    """Put the key saved in the settings into this process's environment (the SDK reads ``ANTHROPIC_API_KEY``).  An
+    environment variable the person set themselves always wins.  Returns True when some key is available."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    key = saved_ai_key()
+    if key:
+        os.environ["ANTHROPIC_API_KEY"] = key
+        return True
+    return False
+
+
+def store_ai_key(key: str) -> None:
+    key = key.strip()
+    old = saved_ai_key()
+    try:
+        s = settings()
+        if key:
+            s.setValue(KEY_AI_KEY, key)
+        else:
+            s.remove(KEY_AI_KEY)
+        s.sync()
+    except Exception:                                    # noqa: BLE001
+        pass
+    if key:
+        os.environ["ANTHROPIC_API_KEY"] = key
+    elif old and os.environ.get("ANTHROPIC_API_KEY") == old:     # only the key WE put there, never the person's own
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
 # ================================================================================================ base form
 class _FormBase(QWidget):
     """Shared machinery: a field registry, group boxes, caption / music groups and the speech note."""
@@ -320,6 +364,31 @@ class _FormBase(QWidget):
         form.addRow(self.speech_note)
         return box
 
+    def build_highlight_group(self, what: str = "短影音") -> QGroupBox:
+        """Where the highlights come from: a subtitle file (or 「一鍵產生字幕」), and local rules or the AI judge."""
+        box, form = self.group("找重點（爆點）")
+        row = self.path("transcript_file", "選擇字幕檔", CAPTION_FILTER, "（自動：影片旁同名字幕檔或語音辨識）",
+                        f"用這個字幕檔的「文字」判斷哪裡是重點，再剪成{what}。沒選的話會自動找影片旁同名的 .srt，"
+                        "再沒有才用語音辨識。字幕時間要對應來源影片。")
+        form.addRow("字幕檔", row)
+        self.btn_subtitles = QPushButton("一鍵產生字幕")
+        self.btn_subtitles.setFocusPolicy(Qt.TabFocus)
+        self.btn_subtitles.setToolTip("用語音辨識把整支影片轉成字幕，存成影片旁的同名 .srt（可以先用記事本修正錯字），"
+                                      "之後找重點會直接用它。需要安裝語音辨識；第一次會詢問是否下載模型，素材不會上傳。")
+        form.addRow("", self.btn_subtitles)
+        form.addRow("判斷方式", self.combo("highlight_engine", [
+            ("local", "本機規則（離線，免費）"), ("claude", "AI 判斷（Claude，需金鑰與網路）")],
+            "本機規則：看提問、反轉、情緒、乾貨、數字、語氣等線索。AI 判斷：把字幕「文字」送給 Claude 評分每一句，"
+            "更懂語意與笑點；只傳文字與時間碼，不會上傳影片或聲音；結果會存在這台電腦，同一支影片再剪不必重送。"))
+        self.btn_ai_key = QPushButton("設定 AI 金鑰…")
+        self.btn_ai_key.setFocusPolicy(Qt.TabFocus)
+        self.btn_ai_key.setToolTip("Claude API 金鑰（console.anthropic.com 取得）。存在這台電腦的使用者設定中；"
+                                   "也可以改用環境變數 ANTHROPIC_API_KEY。")
+        form.addRow("", self.btn_ai_key)
+        self.transcript_note = Note()
+        form.addRow(self.transcript_note)
+        return box
+
     def build_music_group(self) -> QGroupBox:
         box, form = self.group("配樂")
         form.addRow("配樂檔", self.path("music_path", "選擇配樂檔", MUSIC_FILTER, "（不加配樂）",
@@ -410,7 +479,12 @@ class _FormBase(QWidget):
         self.w["traditional_chinese"].setEnabled(lang_on and zh)
 
     def _sync_music(self) -> None:
-        self.w["music_gain_db"].setEnabled(bool(self._get["music_path"]()))
+        if "music_path" in self._get:
+            self.w["music_gain_db"].setEnabled(bool(self._get["music_path"]()))
+
+    def _sync_ai(self) -> None:
+        if "highlight_engine" in self._get:
+            self.btn_ai_key.setVisible(self._get["highlight_engine"]() == "claude")
 
     def validate(self) -> str:
         """A 繁中 problem text for settings that cannot work (empty string = fine)."""
@@ -422,7 +496,13 @@ class _FormBase(QWidget):
                 return f"找不到字幕檔：{f}"
             if os.path.splitext(f)[1].lower() not in CAPTION_EXTS:
                 return "字幕檔格式不支援，請選擇 .srt、.ass 或 .vtt 檔。"
-        m = str(self._get["music_path"]())
+        if "transcript_file" in self._get:
+            t = str(self._get["transcript_file"]())
+            if t and not os.path.isfile(t):
+                return f"找不到找重點用的字幕檔：{t}"
+            if t and os.path.splitext(t)[1].lower() not in CAPTION_EXTS:
+                return "找重點用的字幕檔格式不支援，請選擇 .srt、.ass 或 .vtt 檔。"
+        m = str(self._get["music_path"]()) if "music_path" in self._get else ""
         if m and not os.path.isfile(m):
             return f"找不到配樂檔：{m}"
         return ""
@@ -487,7 +567,8 @@ class ShortsForm(_FormBase):
                                    "把說話中間超過「停頓判定長度」的空白縮短，讓節奏更緊湊；剪點會盡量落在句子邊界。"))
         left.addWidget(box)
 
-        # ---- 字幕 / 配樂 (right column)
+        # ---- 找重點 / 字幕 / 配樂 (right column)
+        right.addWidget(self.build_highlight_group("短影音"))
         right.addWidget(self.build_captions_group("　這份設定同時決定是否用逐字稿挑選剪點。"))
         right.addWidget(self.build_music_group())
         left.addStretch(1)
@@ -536,6 +617,7 @@ class ShortsForm(_FormBase):
         self.strength_label.setEnabled(self.w["reframe_strength"].isEnabled())
         self._sync_captions(bool(self._get["use_speech"]()))
         self._sync_music()
+        self._sync_ai()
         self.w["pause_min"].setEnabled(bool(self._get["tighten"]()))
         self.w["pause_keep"].setEnabled(bool(self._get["tighten"]()))
         self._sync_note()
@@ -627,3 +709,105 @@ class AssembleForm(_FormBase):
         self._sync_captions(False)
         self._sync_music()
         self._sync_note()
+
+
+# ================================================================================================ long video
+class LongformForm(_FormBase):
+    PARAMS = LongformParams
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        left, right = self.columns(lay)
+
+        # ---- 剪法
+        box, form = self.group("剪法")
+        form.addRow("模式", self.combo("mode", [("highlights", "重點精華＋去水詞"), ("clean", "只去水詞與停頓（內容全留）")],
+                                       "重點精華：依內容挑出最有料的句子（含它的鋪陳），其餘剪掉；只去水詞：每一句都留，只剪「嗯、呃、那個」與長停頓。"))
+        ratio = QSpinBox()
+        ratio.setRange(5, 100)
+        ratio.setSingleStep(5)
+        ratio.setSuffix(" %")
+        ratio.setMaximumWidth(170)
+        ratio.setKeyboardTracking(False)
+        self._reg("keep_ratio", ratio, lambda: ratio.value() / 100.0,
+                  lambda v: ratio.setValue(int(round(max(0.05, min(1.0, _num(v, 0.5))) * 100))), ratio.valueChanged,
+                  "保留多少比例的「說話內容」。50% ＝ 一小時的訪談大約剪成 25–30 分鐘（停頓與水詞另外再剪）。")
+        form.addRow("保留比例", ratio)
+        form.addRow("目標長度", self.spin("target_seconds", 0.0, 36000.0, 30.0, 0, " 秒",
+                                          "指定時取代保留比例。0＝依保留比例。", special="依保留比例"))
+        left.addWidget(box)
+
+        # ---- 去水詞
+        box, form = self.group("去水詞與節奏")
+        form.addRow("", self.check("remove_fillers", "剪掉「嗯、呃、那個、就是」這類水詞",
+                                   "「嗯、呃」一律剪；「那個、就是、然後」只有單獨出現或連續重複時才剪（「那個人」不會被剪）。"
+                                   "需要逐字時間（語音辨識或「一鍵產生字幕」）。"))
+        form.addRow("", self.check("remove_stutters", "剪掉重複字（我我我 → 我）",
+                                   "同一個詞連續重複時只留最後一次。單一中文字要重複三次以上才算（聊聊、謝謝不會被剪）。"))
+        form.addRow("", self.check("tighten", "縮短長停頓", "超過「停頓判定長度」的空白只保留一小段。"))
+        left.addWidget(box)
+
+        # ---- 講者特寫
+        box, form = self.group("講者特寫（兩人以上對談）")
+        form.addRow("", self.check("speaker_zoom", "有人連續說話時放大到他身上",
+                                   "畫面上有兩個人以上、其中一人連續說超過「觸發長度」時，切到他的特寫；換人說話或說太久時"
+                                   "切回全景。判斷依據是人臉與嘴部動作（側臉、遮嘴、兩人同時說話時判斷不出來）。"))
+        form.addRow("觸發長度", self.spin("zoom_min_turn", 1.0, 30.0, 0.5, 1, " 秒", "連續說話超過這麼久才放大。"))
+        form.addRow("最長特寫", self.spin("zoom_max", 3.0, 120.0, 1.0, 0, " 秒",
+                                          "一段特寫最長多久；說得更久時會在句子邊界切回全景，遇到爆點句再切回特寫。"))
+        form.addRow("全景至少", self.spin("zoom_back_min", 0.5, 30.0, 0.5, 1, " 秒",
+                                          "開場與每次換人說話時，先給多人全景這麼久，觀眾才看得出是誰在回答。"))
+        right.addWidget(box)
+        right.addWidget(self.build_highlight_group("精華長片"))
+
+        box, form = self.group("字幕")
+        form.addRow("字幕", self.combo("captions", [("off", "不加字幕"), ("auto", "自動（逐字稿或字幕檔）"),
+                                                   ("file", "使用字幕檔")], "是否把字幕放進成品。"))
+        form.addRow("字幕檔", self.path("caption_file", "選擇字幕檔", CAPTION_FILTER, "選擇 .srt / .ass / .vtt"))
+        form.addRow("語言", self.combo("language", LANGUAGES, "語音辨識使用的語言。"))
+        form.addRow("", self.check("traditional_chinese", "辨識出的中文轉成繁體"))
+        form.addRow(self.speech_note)
+        right.addWidget(box)
+        left.addStretch(1)
+        right.addStretch(1)
+
+        # ---- 進階
+        body = self.advanced.body_layout
+        body.addRow("停頓判定長度", self.spin("pause_min", 0.1, 10.0, 0.05, 2, " 秒", "至少這麼長的停頓才會被縮短。"))
+        body.addRow("縮短後保留", self.spin("pause_keep", 0.0, 3.0, 0.05, 2, " 秒", "每段被縮短的停頓仍保留這麼長。"))
+        body.addRow("靜音門檻", self.spin("silence_db", -90.0, -10.0, 1.0, 0, " dB", "低於這個音量就視為停頓。"))
+        body.addRow("特寫倍率", self.spin("zoom_level", 0.0, 3.0, 0.1, 1, " 倍",
+                                          "0＝依臉的大小自動決定（約 1.35–2.4 倍）。", special="自動"))
+        body.addRow("影格率", self.spin("fps", 0.0, 240.0, 1.0, 2, " fps", "0＝跟來源一樣。", special="同來源"))
+        body.addRow("", self.check("use_speech", "用語音辨識取得逐字時間（剪水詞、剪點更準）",
+                                   "需要安裝語音辨識；沒有時仍可用字幕檔，但水詞只能剪整句都是水詞的字幕。"))
+        lay.addWidget(self.advanced)
+        lay.addStretch(1)
+        self.set_params(self.PARAMS())
+
+    def wants_speech(self) -> bool:
+        return self.caption_mode() == "auto" or bool(self._get["use_speech"]())
+
+    def _sync(self) -> None:
+        hl = self._get["mode"]() == "highlights"
+        self.w["keep_ratio"].setEnabled(hl)
+        self.w["target_seconds"].setEnabled(hl)
+        zoom = bool(self._get["speaker_zoom"]())
+        for k in ("zoom_min_turn", "zoom_max", "zoom_back_min", "zoom_level"):
+            self.w[k].setEnabled(zoom)
+        self.w["pause_min"].setEnabled(bool(self._get["tighten"]()))
+        self.w["pause_keep"].setEnabled(bool(self._get["tighten"]()))
+        self._sync_captions(bool(self._get["use_speech"]()))
+        self._sync_ai()
+        self._sync_note()
+
+    def validate(self) -> str:
+        bad = super().validate()
+        if bad:
+            return bad
+        if float(self._get["zoom_max"]()) < float(self._get["zoom_min_turn"]()):
+            return "「最長特寫」不能短於「觸發長度」。"
+        return ""

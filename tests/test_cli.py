@@ -705,3 +705,49 @@ def test_ctrl_c_cancels_a_child_process_and_kills_ffmpeg(media, tmp_path, child_
             break
         time.sleep(0.1)
     assert processes_mentioning(token) == [], "an ffmpeg child outlived the cancelled command"
+
+
+# ================================================================================ longform / subtitle
+@ffmpeg
+def test_longform_writes_a_plan_and_project_with_the_subtitle_text(media, tmp_path, capsys):
+    src_dir = tmp_path / "長片 素材"
+    src_dir.mkdir()
+    src = src_dir / "訪談.mp4"
+    shutil.copy(media / "長 片 a.mp4", src)
+    # the same-name subtitle file next to the video is what 「一鍵字幕」 leaves behind
+    (src_dir / "訪談.srt").write_text("1\n00:00:01,000 --> 00:00:03,500\n大家好今天聊聊\n\n2\n00:00:05,000 --> 00:00:08,000\n"
+                                    "但是沒想到我竟然賠了300萬！\n", encoding="utf-8")
+    outdir = tmp_path / "out"
+    rc, out, err = run_main(capsys, "longform", src, "-o", outdir, "--keep", "0.6", "--no-zoom")
+    assert rc == 0, out + err
+    assert "長片：" in out and "保留" in out and "訪談.srt" in out
+    proj = Project.load(outdir / "訪談_longform.acproj")
+    seq = proj.sequences[0]
+    assert seq.name.startswith("長片精華") and (seq.width, seq.height) == (640, 360)
+    assert not [i for i in validate_sequence(proj, seq) if i.level == "error"]
+    assert proj.meta["ai_runs"][0]["kind"] == "longform" and proj.meta["ai_runs"][0]["human_review"] == "pending"
+    assert_honest(out + err)
+    rc, out, err = run_main(capsys, "longform", src, "-o", outdir, "--keep", "3")
+    assert rc == 2 and "0.05" in (out + err)
+
+
+def test_subtitle_command_writes_srt_and_word_timings(tmp_path, capsys, monkeypatch):
+    from autocut.analysis import speech as sp
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(cli, "_require_ffmpeg", lambda: None)
+    segs = [{"start": 0.5, "end": 3.0, "text": "嗯，今天我們來聊聊重點。",
+             "words": [{"start": 0.5, "end": 0.8, "word": "嗯"}, {"start": 1.0, "end": 3.0, "word": "今天我們來聊聊重點"}]}]
+    monkeypatch.setattr(sp, "transcribe", lambda *a, **k: sp.Transcript(segs))
+    rc, out, err = run_main(capsys, "subtitle", video)
+    assert rc == 0, out + err
+    srt = (tmp_path / "talk.srt").read_text(encoding="utf-8")
+    assert "00:00:00,500 -->" in srt and "今天我們來聊聊重點" in srt
+    words = json.loads((tmp_path / "talk.words.json").read_text(encoding="utf-8"))
+    assert words["segments"][0]["words"][0]["word"] == "嗯"
+    rc, out, err = run_main(capsys, "subtitle", video)                       # never overwrites silently
+    assert rc != 0 and "--force" in (out + err)
+    assert run_main(capsys, "subtitle", video, "--force")[0] == 0
+    monkeypatch.setattr(sp, "transcribe", lambda *a, **k: (_ for _ in ()).throw(sp.SpeechUnavailable("尚未下載語音模型")))
+    rc, out, err = run_main(capsys, "subtitle", video, "--force")
+    assert rc != 0 and "--download" in (out + err) and "Traceback" not in (out + err)

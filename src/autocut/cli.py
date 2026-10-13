@@ -455,7 +455,8 @@ def cmd_shorts(args) -> int:
     ids = _import_assets(proj, [args.input])
     params = ShortsParams(platform=args.platform, count=args.count, target_seconds=args.target,
                           captions=captions, caption_file=caption_file, reframe=args.reframe,
-                          language=args.language, tighten=not args.no_tighten, music_path=music)
+                          language=args.language, tighten=not args.no_tighten, music_path=music,
+                          transcript_file=_existing_file(args.subs, "字幕檔"), highlight_engine=args.highlight)
     outdir = _abs(args.output)
     outdir.mkdir(parents=True, exist_ok=True)
     with _cancel_on_ctrl_c() as cancel:
@@ -481,6 +482,55 @@ def cmd_assemble(args) -> int:
         plan = propose_assemble(proj, ids, params, _progress_printer("分析 "), cancel)
         print(f"提出 1 支長片，約 {human_duration(plan.total_duration)}")
         return _run_plan(proj, plan, args, outdir, "assembled", cancel)
+
+
+def cmd_longform(args) -> int:
+    _require_ffmpeg()
+    from .autoedit.api import propose_longform
+    from .autoedit.config import LongformParams
+    from .core.project import Project
+    src = _abs(args.input)
+    if src.is_dir() or len(_expand_inputs([args.input])[0]) > 1:
+        raise CliError("longform 一次只處理一支影片，請指定單一影片檔（很多支毛片請用 assemble）。")
+    if not (0.05 <= args.keep <= 1.0):
+        raise CliError("--keep 需介於 0.05 與 1.0 之間（例如 0.5 = 保留一半的說話內容）。", EXIT_REJECTED)
+    proj = Project.new(src.stem, with_sequence=False)
+    ids = _import_assets(proj, [args.input])
+    params = LongformParams(mode="clean" if args.clean else "highlights", keep_ratio=args.keep,
+                            target_seconds=args.target or 0.0, remove_fillers=not args.keep_fillers,
+                            speaker_zoom=not args.no_zoom, zoom_min_turn=args.zoom_after,
+                            captions=args.captions, transcript_file=_existing_file(args.subs, "字幕檔"),
+                            language=args.language, highlight_engine=args.highlight)
+    outdir = _abs(args.output)
+    outdir.mkdir(parents=True, exist_ok=True)
+    with _cancel_on_ctrl_c() as cancel:
+        plan = propose_longform(proj, ids[0], params, _progress_printer("分析 "), cancel)
+        main = next((d for d in plan.decisions if d.get("kind") == "longform"), {})
+        print(f"長片：{main.get('summary', '')}")
+        return _run_plan(proj, plan, args, outdir, src.stem + "_longform", cancel)
+
+
+def cmd_subtitle(args) -> int:
+    _require_ffmpeg()
+    from .analysis.speech import SpeechUnavailable
+    from .autoedit.subtitle_gen import make_subtitle_file
+    src = _abs(args.input)
+    if not src.is_file():
+        raise CliError(f"找不到影片檔：{args.input}")
+    with _cancel_on_ctrl_c() as cancel:
+        try:
+            out, n = make_subtitle_file(src, _abs(args.output) if args.output else None, language=args.language,
+                                        traditional=not args.no_traditional, model_size=args.model,
+                                        allow_download=args.download, overwrite=args.force,
+                                        progress=_progress_printer("字幕 "), cancel=cancel)
+        except FileExistsError as exc:
+            raise CliError(f"{exc}；加 --force 覆蓋。") from exc
+        except SpeechUnavailable as exc:
+            hint = "（第一次使用可加 --download 允許下載語音模型）" if "下載" in str(exc) else ""
+            raise CliError(f"{exc}{hint}") from exc
+    print(f"已產生 {n} 條字幕 → {out}")
+    print("可以先用任何文字編輯器修正錯字；之後 shorts／longform 會自動使用這個同名字幕檔來找重點。")
+    return EXIT_OK
 
 
 def cmd_studio(args) -> int:
@@ -619,7 +669,35 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--caption-file", help="字幕檔（.srt／.ass／.vtt）")
     s.add_argument("--reframe", default="face", choices=["face", "motion", "center", "blur"], help="9:16 取景方式")
     s.add_argument("--no-tighten", action="store_true", help="不剪掉過長的停頓")
+    s.add_argument("--subs", help="用這個字幕檔（.srt／.vtt／.ass）的文字找爆點（預設：影片旁同名字幕檔或語音辨識）")
+    s.add_argument("--highlight", default="local", choices=["local", "claude"],
+                   help="爆點判斷：local 本機規則（預設）、claude 由 AI 判斷（要另外安裝並設定 API 金鑰，只傳送字幕文字）")
     s.set_defaults(fn=cmd_shorts)
+
+    s = add_cmd("longform", "長影片 → 精華長片（重點＋去水詞＋講者特寫）")
+    s.add_argument("input", metavar="影片檔")
+    add_run_opts(s)
+    s.set_defaults(preset="youtube_1080p")
+    s.add_argument("--keep", type=float, default=0.5, help="保留多少比例的說話內容（0.05–1.0，預設 0.5）")
+    s.add_argument("--target", type=_positive_float, help="目標秒數（指定時取代 --keep）")
+    s.add_argument("--clean", action="store_true", help="不挑重點，只剪掉水詞與停頓")
+    s.add_argument("--keep-fillers", action="store_true", help="不剪「嗯、呃、那個」這類水詞")
+    s.add_argument("--no-zoom", action="store_true", help="不做講者特寫")
+    s.add_argument("--zoom-after", type=_positive_float, default=3.0, help="一個人連續說超過幾秒就放大（預設 3）")
+    s.add_argument("--captions", default="off", choices=["off", "auto"], help="是否加字幕")
+    s.add_argument("--subs", help="用這個字幕檔的文字找重點（預設：影片旁同名字幕檔或語音辨識）")
+    s.add_argument("--highlight", default="local", choices=["local", "claude"], help="重點判斷：local 本機規則、claude AI")
+    s.set_defaults(fn=cmd_longform)
+
+    s = add_cmd("subtitle", "一鍵字幕：語音辨識整支影片，存成同名 .srt")
+    s.add_argument("input", metavar="影片檔")
+    s.add_argument("-o", "--output", help="字幕檔路徑（預設：影片旁的同名 .srt）")
+    s.add_argument("--language", default="zh", help="語言（預設 zh）")
+    s.add_argument("--model", default="small", help="語音模型大小（tiny／base／small／medium／large-v3）")
+    s.add_argument("--no-traditional", action="store_true", help="不轉成繁體")
+    s.add_argument("--download", action="store_true", help="允許第一次下載語音模型（需要網路；影片不會上傳）")
+    s.add_argument("--force", action="store_true", help="覆蓋已存在的字幕檔")
+    s.set_defaults(fn=cmd_subtitle)
 
     s = add_cmd("assemble", "多支毛片 → 一支長片")
     s.add_argument("inputs", nargs="+", metavar="素材", help="影片／音訊／圖片檔，或放它們的資料夾")

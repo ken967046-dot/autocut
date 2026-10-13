@@ -462,6 +462,17 @@ def choose_transcript(asset, ev, transcript_file: str = "", *, use_speech: bool 
     return None, {"source": "none", "name": "", "sha256": "", "words": False}
 
 
-def word_segments(ev) -> list:
-    """Speech-recognition segments that carry word timings (for mid-word checks / filler removal), else ``[]``."""
-    return [dict(s) for s in (getattr(ev, "speech", None) or []) if s.get("words")]
+def word_segments(ev, asset=None) -> list:
+    """Segments that carry word timings (for mid-word checks / filler removal): the speech-recognition transcript in the
+    evidence, else the ``<video name>.words.json`` that 「一鍵字幕」 leaves next to the video, else ``[]``."""
+    segs = [dict(s) for s in (getattr(ev, "speech", None) or []) if s.get("words")]
+    if segs or asset is None:
+        return segs
+    import json
+    from pathlib import Path
+    try:
+        p = Path(str(getattr(asset, "path", "")))
+        data = json.loads(p.with_name(p.stem + ".words.json").read_text(encoding="utf-8"))
+        return [dict(s) for s in data.get("segments", []) if isinstance(s, dict) and s.get("words")]
+    except (OSError, ValueError, AttributeError):
+        return []

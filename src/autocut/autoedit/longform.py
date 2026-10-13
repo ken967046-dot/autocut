@@ -388,9 +388,9 @@ def plan_longform(proj: Project, asset_id: str, params: Optional[LongformParams]
         overrides, judge_info = judge_sentences(hl.sentences(segs), engine=p.highlight_engine, language=p.language,
                                                 notes=notes, cancel=cancel)
     feat = sc.Feat(ev, segs, overrides)
-    word_units = hl.sentences(hl.word_segments(ev))
+    word_units = hl.sentences(hl.word_segments(ev, asset))
     if not feat.words:
-        feat.words = sc.transcript_words(hl.word_segments(ev))
+        feat.words = sc.transcript_words(hl.word_segments(ev, asset))
     dur = float(ev.duration or asset.duration)
     units = feat.units if feat.units else audio_units(feat)
     if not feat.units:

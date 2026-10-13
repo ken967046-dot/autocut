@@ -1,4 +1,5 @@
-"""Auto-edit dialogs (GUI_SPEC §6): ``ShortsDialog(state, asset_id)`` and ``AssembleDialog(state, asset_ids)``.
+"""Auto-edit dialogs (GUI_SPEC §6): ``ShortsDialog(state, asset_id)``, ``LongformDialog(state, asset_id)`` and
+``AssembleDialog(state, asset_ids)``.
 
 Flow (three pages in one dialog)::
 
@@ -13,23 +14,27 @@ Widgets of the settings live in ``autoedit_forms``; review-page widgets and the 
 from __future__ import annotations
 
 import copy
+import importlib.util
+import os
 import time
 from typing import Any, Callable, Optional, Sequence
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                                QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
 from ..analysis import speech as speech_mod
 from ..autoedit import api
-from ..autoedit.config import AssembleParams, AuditRules, ShortsParams
+from ..autoedit import highlights as hl
+from ..autoedit.config import AssembleParams, AuditRules, LongformParams, ShortsParams
 from ..core.plan import ERROR, WARN, AuditReceipt, EditPlan, Finding
 from ..core.project import Asset, Project
 from ..media.ffmpeg import Cancelled
 from . import media_bin
-from .autoedit_forms import (KEY_ASSEMBLE, KEY_SHORTS, PIP_COMMAND, AssembleForm, Note, ShortsForm, dim_label,
-                             load_params, save_params)
+from .autoedit_forms import (AI_PIP_COMMAND, KEY_ASSEMBLE, KEY_LONGFORM, KEY_SHORTS, PIP_COMMAND, AssembleForm,
+                             LongformForm, Note, ShortsForm, apply_saved_ai_key, dim_label, load_params, save_params,
+                             saved_ai_key, store_ai_key)
 from .autoedit_review import (Candidate, CandidateRow, FindingsView, PreviewDialog, ThumbLoader, UsageTable,
                               build_candidates, clock, compose_thumbnail, length_summary)
 from .state import AppState
@@ -49,6 +54,22 @@ def propose_shorts(*args, **kw):
 
 def propose_assemble(*args, **kw):
     return api.propose_assemble(*args, **kw)
+
+
+def propose_longform(*args, **kw):
+    return api.propose_longform(*args, **kw)
+
+
+def make_subtitle_file(*args, **kw):
+    from ..autoedit.subtitle_gen import make_subtitle_file as _make
+    return _make(*args, **kw)
+
+
+def ask_text(parent, title: str, label: str, text: str = "") -> Optional[str]:
+    """A password-style one-line input (``None`` = cancelled).  Tests monkeypatch this."""
+    from PySide6.QtWidgets import QInputDialog, QLineEdit
+    value, ok = QInputDialog.getText(parent, title, label, QLineEdit.Password, text)
+    return value if ok else None
 
 
 def audit_plan(*args, **kw):
@@ -137,7 +158,13 @@ class _AutoEditDialog(QDialog):
         self._build_ui()
         self.form.set_params(load_params(self.PARAMS, self.KEY))
         self.form.restore_advanced()
+        if hasattr(self.form, "btn_subtitles"):
+            apply_saved_ai_key()
+            self.form.btn_subtitles.clicked.connect(lambda *_: self.make_subtitles())
+            self.form.btn_ai_key.clicked.connect(lambda *_: self.set_ai_key())
+            self.form.changed.connect(self._fill_transcript_status)
         self._fill_source_info()
+        self._fill_transcript_status()
         self._show_page(PAGE_FORM)
         self._probe_speech()
 
@@ -172,6 +199,7 @@ class _AutoEditDialog(QDialog):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(self.form)
         self.form_scroll = scroll
+        scroll.viewport().installEventFilter(self)
         lay.addWidget(scroll, 1)
         self.form_note = Note()
         lay.addWidget(self.form_note)
@@ -305,6 +333,25 @@ class _AutoEditDialog(QDialog):
         except RuntimeError:                                          # the dialog was deleted meanwhile
             pass
 
+    # ------------------------------------------------------------------ wrapped notes inside the scroll area
+    def eventFilter(self, obj, event) -> bool:                    # noqa: N802 (Qt API)
+        if getattr(self, "form_scroll", None) is not None and obj is self.form_scroll.viewport() \
+                and event.type() == QEvent.Resize:
+            self._fit_form()
+        return super().eventFilter(obj, event)
+
+    def _fit_form(self) -> None:
+        """QScrollArea sizes its widget from the size hint, which assumes every wrapped note is ONE long line; at the
+        real (narrower) width the notes need more lines and were clipped.  Ask the layout for the height it needs at
+        the viewport's width instead."""
+        try:
+            lay = self.form.layout()
+            w = self.form_scroll.viewport().width()
+            if lay is not None and lay.hasHeightForWidth() and w > 0:
+                self.form.setMinimumHeight(lay.totalHeightForWidth(w))
+        except RuntimeError:                                        # being deleted
+            pass
+
     def _subtitle_for(self, index: int) -> str:
         if index == PAGE_FORM:
             return "選好設定後按「開始分析」。分析不會改動你的專案，結果由你確認後才會套用。"
@@ -313,6 +360,8 @@ class _AutoEditDialog(QDialog):
         n = len(self.candidates)
         if self.KIND == "shorts":
             return (f"找到 {n} 支。勾選要保留的，按「套用選取的片段」才會寫進專案（Ctrl+Z 可整批復原）。")
+        if self.KIND == "longform":
+            return "看過剪掉了什麼、哪裡放大後，按「套用」才會建立新序列（Ctrl+Z 可復原）。原影片不會被改動。"
         return "看過總長與每支素材的使用情形後，按「套用選取的片段」才會建立新序列（Ctrl+Z 可復原）。"
 
     def _back_to_form(self, message: str = "", level: str = "info") -> None:
@@ -412,6 +461,9 @@ class _AutoEditDialog(QDialog):
         if self._phase == "audit":
             self._end_task()
             return
+        if self._phase == "subtitle":
+            self._back_to_form("已取消產生字幕，沒有寫入任何檔案。", "info")
+            return
         self._back_to_form("已取消分析，專案沒有被改動。設定都還在，可以調整後再按「開始分析」。", "info")
 
     def cancel_run(self) -> None:
@@ -452,6 +504,8 @@ class _AutoEditDialog(QDialog):
         ok, reason, cached = res
         self.speech_status = (ok, reason, cached)
         self.form.set_speech_status(ok, reason, cached, SPEECH_MODEL, _model_mb())
+        self._fill_transcript_status()
+        QTimer.singleShot(0, self._fit_form)
 
     def _after_probe(self, res: tuple) -> None:
         """Start of the analysis, step 2: ask before downloading a speech model (never silently)."""
@@ -476,10 +530,10 @@ class _AutoEditDialog(QDialog):
         p = copy.deepcopy(p)
         if p.captions == "auto":
             p.captions = "off"
-        if isinstance(p, ShortsParams) and p.captions != "file":
+        if hasattr(p, "use_speech") and p.captions != "file":
             p.use_speech = False
         self.extra_notes.append(
-            "你沒有同意下載語音模型，所以這次沒有自動字幕" + ("，剪點也沒有用逐字稿" if isinstance(p, ShortsParams) else "")
+            "你沒有同意下載語音模型，所以這次沒有自動字幕" + ("，剪點也沒有用逐字稿" if hasattr(p, "use_speech") else "")
             + "。想要字幕：再按一次「開始分析」並同意下載，或改選字幕檔。")
         return p
 
@@ -500,6 +554,94 @@ class _AutoEditDialog(QDialog):
         self._run("download", job, done, title="正在下載語音模型…",
                   detail=f"第一次使用需要下載（約 {mb} MB），完成後可離線使用；素材不會上傳。", indeterminate=True)
 
+    # ------------------------------------------------------------------ 找重點: subtitle file, one-click subtitles, AI key
+    def _single_asset(self) -> Optional[Asset]:
+        return self.state.project.assets.get(self.asset_ids[0]) if len(self.asset_ids) == 1 else None
+
+    def _fill_transcript_status(self) -> None:
+        """Tell the person which text will decide the highlights (the main lever for a non-boring result)."""
+        note = getattr(self.form, "transcript_note", None)
+        a = self._single_asset()
+        if note is None or a is None:
+            return
+        p = self.form.params()
+        if p.transcript_file:
+            text, level = f"會用你選的字幕檔「{os.path.basename(p.transcript_file)}」的文字找重點。", "ok"
+        elif hl.sidecar_subtitle(a.path):
+            text, level = f"會用影片旁的字幕檔「{os.path.basename(hl.sidecar_subtitle(a.path))}」的文字找重點。", "ok"
+        elif self.speech_status is not None and self.speech_status[0]:
+            text, level = "還沒有字幕檔：會用語音辨識的逐字稿找重點。建議先按「一鍵產生字幕」並修正錯字，重點會抓得更準。", "info"
+        else:
+            text, level = ("還沒有字幕檔，也沒有安裝語音辨識：只能依聲音與畫面挑片段，抓不到內容重點。"
+                           "請選一個字幕檔，或安裝語音辨識後按「一鍵產生字幕」。"), "warn"
+        if p.highlight_engine == "claude":
+            ok_pkg = importlib.util.find_spec("anthropic") is not None
+            if not ok_pkg:
+                text += f"\nAI 判斷需要另外安裝：{AI_PIP_COMMAND}（沒有時自動改用本機規則）。"
+                level = "warn"
+            elif not (os.environ.get("ANTHROPIC_API_KEY") or saved_ai_key()):
+                text += "\nAI 判斷還沒有金鑰：請按「設定 AI 金鑰…」（沒有時自動改用本機規則）。"
+                level = "warn"
+            else:
+                text += "\nAI 判斷只會傳送字幕文字與時間碼，不會上傳影片或聲音。"
+        note.set_note(text, level)
+        QTimer.singleShot(0, self._fit_form)
+
+    def set_ai_key(self) -> bool:
+        key = ask_text(self, "設定 AI 金鑰", "Claude API 金鑰（留空＝刪除已存的金鑰）：", saved_ai_key())
+        if key is None:
+            return False
+        store_ai_key(key)
+        self._fill_transcript_status()
+        return True
+
+    def make_subtitles(self) -> bool:
+        """「一鍵產生字幕」: speech recognition of the whole source -> ``<video>.srt`` next to it (asks before overwriting
+        and before downloading a model)."""
+        if self._busy:
+            return False
+        a = self._single_asset()
+        if a is None or a.missing or not a.has_audio:
+            self.form_note.set_note("這個素材找不到檔案或沒有聲音，無法產生字幕。", "error")
+            return False
+        from ..autoedit.subtitle_gen import sidecar_path
+        target = sidecar_path(a.path)
+        overwrite = False
+        if target.exists():
+            if not ask(self, "字幕檔已存在", f"「{target.name}」已經存在。\n要重新辨識並覆蓋嗎？（你手動改過的內容會被取代）",
+                       "重新產生並覆蓋", "保留現有的"):
+                self.form.w["transcript_file"].set_path(str(target))
+                return False
+            overwrite = True
+        ok, reason = speech_mod.speech_available()
+        if not ok:
+            self.form_note.set_note(f"{reason}\n安裝後就能一鍵產生字幕（或自己準備一個 .srt 選進來）。", "error")
+            return False
+        allow = False
+        if not speech_mod.model_cached(SPEECH_MODEL):
+            if not ask(self, "下載語音模型", f"產生字幕需要語音辨識模型「{SPEECH_MODEL}」（約 {_model_mb()} MB）。\n"
+                       "第一次使用要連網下載一次，之後可離線使用；你的素材不會上傳。\n\n要現在下載嗎？",
+                       "下載並繼續", "取消"):
+                return False
+            allow = True
+        p = self.form.params()
+
+        def job(progress, cancel):
+            return make_subtitle_file(a.path, overwrite=overwrite, allow_download=allow, language=p.language,
+                                      traditional=bool(p.traditional_chinese), model_size=SPEECH_MODEL,
+                                      progress=progress, cancel=cancel)
+
+        def done(res) -> None:
+            path, n = res
+            self._end_task()
+            self._show_page(PAGE_FORM)
+            self.form.w["transcript_file"].set_path(str(path))
+            self.form_note.set_note(f"已產生 {n} 條字幕：{path}\n可以先用記事本修正錯字（重點會抓得更準），再按「開始分析」。", "ok")
+            self._fill_transcript_status()
+
+        self._run("subtitle", job, done, title="正在產生字幕…", detail="語音辨識整支影片（全在這台電腦上進行）")
+        return True
+
     # ------------------------------------------------------------------ analysis
     def _precheck(self) -> str:                                    # overridden: 繁中 problem text or ""
         return ""
@@ -517,6 +659,7 @@ class _AutoEditDialog(QDialog):
     def _on_form_changed(self) -> None:
         if self.form_note.text() and self.form_note.level == "error":
             self.form_note.set_note("")
+        QTimer.singleShot(0, self._fit_form)
 
     def start_analysis(self) -> bool:
         """「開始分析」: validate -> remember the settings -> (speech check) -> propose + audit in the background."""
@@ -631,7 +774,7 @@ class _AutoEditDialog(QDialog):
         head = f.where.split("/")[0] if f.where else ""
         for n, c in enumerate(self.candidates, 1):
             if c.seq_id == head:
-                return f"第 {n} 支" if self.KIND == "shorts" else "合併後的長片"
+                return f"第 {n} 支" if self.KIND == "shorts" else ("精華長片" if self.KIND == "longform" else "合併後的長片")
         asset = self._assets.get(head)
         return asset.name if asset is not None else ""
 
@@ -809,6 +952,32 @@ class ShortsDialog(_AutoEditDialog):
 
     def _propose(self, snapshot: Project, params, progress, cancel) -> EditPlan:
         return propose_shorts(snapshot, self.asset_id, params, progress, cancel)
+
+
+# ============================================================================ one long talk -> highlights + fillers + close-ups
+class LongformDialog(ShortsDialog):
+    KIND = "longform"
+    TITLE = "自動剪輯：長影片精華（重點＋去水詞＋講者特寫）"
+    HEADER = "把長影片剪成精華長片：留重點、剪水詞、說話的人自動放大"
+    FORM = LongformForm
+    PARAMS = LongformParams
+    KEY = KEY_LONGFORM
+    ANALYZING = "正在分析影片：找重點、找水詞、判斷誰在說話…"
+
+    def _precheck(self) -> str:
+        a = self._asset()
+        if a is None:
+            return "專案裡找不到這個素材（它可能已被移除）。"
+        if a.kind != "video" or not a.has_video:
+            return "這個素材沒有影像，無法做長片剪輯。"
+        if a.missing:
+            return f"找不到素材檔案：{a.path}\n請先在素材庫重新連結檔案。"
+        if a.duration < 10.0:
+            return "影片太短（不到 10 秒），不需要長片剪輯。"
+        return ""
+
+    def _propose(self, snapshot: Project, params, progress, cancel) -> EditPlan:
+        return propose_longform(snapshot, self.asset_id, params, progress, cancel)
 
 
 # ============================================================================ many clips -> one long video
