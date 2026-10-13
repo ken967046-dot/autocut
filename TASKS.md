@@ -92,7 +92,7 @@
     修正設定頁捲動區裡換行的提示文字被裁掉（QScrollArea 不考慮 height-for-width）。
   - `Setup-AutoCut.bat -WithAI`、`requirements-ai.txt`、`pyproject` extra `ai`；`scripts/windows/Codex-Task.ps1`（新）、`Codex-Review.ps1 -Paths`、`docs/CODEX_TASKS.md`。
 - 為什麼：使用者試用後回報短影音「重點沒抓到、很無聊」，並要求第二個功能「長影片自動剪輯（重點＋去水詞）＋兩人以上對談時講者自動放大」。
-- 驗證：見各列「驗收／證據」；完整測試結果見下方。過程中自己抓到並修正：浮點雜訊被百分位排名放大成名次差、`tighten_ranges` 不剪段落開頭的水詞、
+- 驗證：見各列「驗收／證據」。完整測試（Linux、Python 3.13、PySide6 6.12.0、ffmpeg 6.1.1、offscreen）：收集 2067 項，**2065 通過、2 跳過（10 分鐘長影片、root 權限）、0 失敗**，pytest 結束代碼 0。過程中自己抓到並修正：浮點雜訊被百分位排名放大成名次差、`tighten_ranges` 不剪段落開頭的水詞、
   每人各自正規化讓「一直講」和「都沒講」無法分辨、疊字（聊聊）被當成口吃、清除 AI 金鑰沒有從環境變數移除、提示文字被裁掉。
 - 沒驗證／已知限制：真實影片的選段品質、真實訪談的講者判斷（只用合成畫面與替身人臉偵測器）、真實 faster-whisper、真實 Claude API 回應
   （只驗證了 SDK 1.13 能組出請求、用假客戶端測流程）、Windows 實機、`Codex-Task.ps1` 只在 Linux 的 PowerShell 7.4 做過語法解析與 `-DryRun`。
