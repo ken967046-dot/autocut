@@ -219,7 +219,7 @@ def merge_fragments(segments: Optional[Sequence[dict]]) -> list[dict]:
         # change always ends the clause (REVIEW-4, Codex)
         backchannel = content_chars(_FILLER_ANY.sub("", text)) == 0
         if cur is not None and (backchannel or cur.get("_bc") or
-                                ("speaker" in seg and seg.get("speaker") != cur.get("speaker"))):
+                                (("speaker" in seg or "speaker" in cur) and seg.get("speaker") != cur.get("speaker"))):
             cur = None
         if cur is not None:
             gap = a - float(cur["end"])

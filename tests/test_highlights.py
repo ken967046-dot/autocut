@@ -363,6 +363,10 @@ def test_merge_keeps_back_channels_and_speakers_apart_and_respects_sentence_ends
     spk = hl.merge_fragments([{"start": 0, "end": 1, "text": "我覺得", "speaker": "A"},
                               {"start": 1, "end": 2, "text": "其實不是", "speaker": "B"}])
     assert len(spk) == 2 and spk[1]["speaker"] == "B"
+    # symmetric: a labelled and an unlabelled segment are never merged, whichever comes first (Codex re-check)
+    for a, b in (({"speaker": "A"}, {}), ({}, {"speaker": "A"})):
+        pair = [{"start": 0, "end": 1, "text": "我覺得", **a}, {"start": 1, "end": 2, "text": "其實不是", **b}]
+        assert len(hl.merge_fragments(pair)) == 2
     # a sentence end (even with trailing space / closing quote) is never merged across
     for first in ("第一句。 ", "他說「好。」 "):
         assert len(hl.merge_fragments([{"start": 0, "end": 1.4, "text": first}, {"start": 1.4, "end": 2.8, "text": "第二句"}])) == 2
