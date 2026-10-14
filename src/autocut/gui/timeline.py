@@ -1934,9 +1934,12 @@ class TimelineWidget(QWidget):
             top = self._lane_top(lane)
             if not (top < band.bottom() and top + lane.h > band.top()):
                 continue
-            if lane.track is None:
-                cues |= {q.id for q in self._cue_index.values()
-                         if self.time_to_x(q.start) <= band.right() and self.time_to_x(q.end) >= band.left()}
+            if lane.track is None:                   # a cue's own block counts (cards and subtitles have own bands)
+                for q in self._cue_index.values():
+                    y0, bh = self.cue_band(lane, q)
+                    if (self.time_to_x(q.start) <= band.right() and self.time_to_x(q.end) >= band.left()
+                            and y0 < band.bottom() and y0 + bh > band.top()):
+                        cues.add(q.id)
                 continue
             clips |= {c.id for c in lane.track.clips
                       if self.time_to_x(c.start) <= band.right() and self.time_to_x(c.end) >= band.left()}

@@ -610,6 +610,41 @@ def test_title_card_cue_ops(proj):
     assert (c.start, c.end) == (pytest.approx(4.0), pytest.approx(6.0)) and c.is_card
 
 
+def test_replace_cues_never_lets_two_cues_share_an_id(proj):
+    """Recognised subtitles come with deterministic ids (``pq0001``, ``pq0002`` ... on every run), so a 字卡 made from an
+    earlier run's ``pq0002`` -- or another incoming cue -- may already own an incoming id.  That cue gets a fresh id:
+    every by-id edit (delete, retime, select) must hit exactly one cue, never the card as well."""
+    ed = Editor(proj)
+    sid = proj.active_sequence().id
+
+    def run():
+        return [CaptionCue("pq0001", 0.0, 1.0, "一"), CaptionCue("pq0002", 1.0, 2.0, "二"),
+                {"id": "pq0002", "start": 2.0, "end": 3.0, "text": "三"}]          # a repeat inside one batch, too
+
+    ed.op("自動字幕", "replace_cues", sid, run())
+    ids = [q.id for q in proj.sequence(sid).cues]
+    assert ids[:2] == ["pq0001", "pq0002"] and len(set(ids)) == 3
+    ed.op("設為字卡", "update_cue", sid, "pq0002", card=True)
+    before = proj.content_json()
+    ed.op("自動字幕", "replace_cues", sid, run())                                # recognise again: the card stays
+    after = proj.content_json()
+    seq = proj.sequence(sid)
+    ids = [q.id for q in seq.cues]
+    assert len(set(ids)) == len(ids) == 4
+    assert [(q.id, q.text) for q in seq.cues if q.is_card] == [("pq0002", "二")]
+    twin = next(q for q in seq.cues if not q.is_card and q.text == "二")
+    assert twin.id != "pq0002"
+    ed.undo()
+    assert proj.content_json() == before
+    ed.redo()
+    assert proj.content_json() == after
+    ed.op("編輯字幕", "update_cue", sid, twin.id, text="改過的字幕")              # edits the subtitle, not the card
+    assert proj.sequence(sid).find_cue("pq0002").text == "二"
+    ed.op("刪除字幕", "remove_cues", sid, [twin.id])                             # deletes the subtitle only
+    seq = proj.sequence(sid)
+    assert [(q.id, q.text, q.is_card) for q in seq.cues if q.text in ("二", "改過的字幕")] == [("pq0002", "二", True)]
+
+
 def test_srt_roundtrip():
     text = to_srt([(0.0, 1.5, "你好"), (2.0, 3.25, "world")])
     cues = parse_srt(text)

@@ -46,7 +46,7 @@ from autocut.gui.state import AppState                                          
 from autocut.gui.widgets import QA_TEXT, VERDICT_TEXT, HumanReviewBox                  # noqa: E402
 from autocut.gui.workers import wait_for_idle                                             # noqa: E402
 from autocut.media.ffmpeg import Cancelled                                                # noqa: E402
-from autocut.util import new_id                                                           # noqa: E402
+from autocut.util import IdGen, new_id                                                    # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -1910,6 +1910,7 @@ class FakeSpeech:
         self.cancel_seen = False
         self.error: BaseException | None = None
         self.cues = [(0.5, 2.0, "辨識出來的第一句"), (2.5, 4.0, "辨識出來的第二句")]
+        self.real_ids = False             # True: ids like the real recogniser's (IdGen("p"): pq0001, pq0002 ...)
 
     def __call__(self, proj, seq, progress=None, cancel=None, **kw):
         self.calls.append({"proj": proj, "seq": seq, "cues_then": [(q.start, q.end, q.text) for q in seq.cues], **kw})
@@ -1922,7 +1923,8 @@ class FakeSpeech:
                     raise Cancelled()
         if self.error is not None:
             raise self.error
-        return [CaptionCue(new_id("q_"), s, e, t) for s, e, t in self.cues]
+        gen = IdGen("p") if self.real_ids else (lambda _kind: new_id("q_"))
+        return [CaptionCue(gen("q"), s, e, t) for s, e, t in self.cues]
 
 
 @pytest.fixture
@@ -3067,3 +3069,100 @@ def test_only_cards_means_nothing_to_export_as_srt(rig, monkeypatch):
     assert not saved and any("只有字卡" in m for m in rig.status)
     rig.seq_tab
     assert "3 張字卡" in rig.panel.sequence_tab.info.text() and "0 則字幕" in rig.panel.sequence_tab.info.text()
+
+
+def test_auto_captions_never_give_a_new_subtitle_the_id_of_a_card(rig, monkeypatch, speech):
+    """The recogniser numbers its cues pq0001, pq0002 ... on every run.  A 字卡 made from an earlier run's pq0002 stays
+    when the subtitles are recognised again, so the new pq0002 must get another id: editing or deleting that subtitle
+    must never touch the card."""
+    answer_asks(monkeypatch, 繼續=True)
+    speech.real_ids = True
+    speech.cues = [(0.5, 2.0, "辨識一"), (2.5, 4.0, "辨識二"), (6.0, 7.0, "辨識三")]
+    rig.cap.b_auto.click()
+    finish(rig)
+    assert [q.id for q in rig.seq.cues] == ["pq0001", "pq0002", "pq0003"]
+    rig.st.select_cues(["pq0002"])
+    rig.settle()
+    rig.cap.b_card.click()
+    rig.settle()
+    with one_undo(rig, "自動字幕"):
+        rig.cap.b_auto.click()
+        finish(rig)
+    ids = [q.id for q in rig.seq.cues]
+    assert len(set(ids)) == len(ids) == 4 and rig.cap.table.rowCount() == 4
+    assert [(q.id, q.text) for q in rig.seq.cues if q.is_card] == [("pq0002", "辨識二")]
+    twin = next(q for q in rig.seq.cues if not q.is_card and q.text == "辨識二")
+    assert twin.id != "pq0002"
+    ed = cell_editor(rig, rig.cap._row_of(twin.id), 2)                   # retype the subtitle's text in the table
+    ed.selectAll()
+    send_text(ed, "改過的字幕")
+    QTest.keyClick(ed, Qt.Key_Return)
+    rig.settle()
+    assert [(q.text, q.is_card) for q in rig.seq.cues if q.text in ("辨識二", "改過的字幕")] == [
+        ("辨識二", True), ("改過的字幕", False)]
+    rig.st.select_cues([twin.id])
+    rig.settle()
+    with one_undo(rig, "刪除字幕"):
+        rig.cap.b_delete.click()
+    assert [(q.id, q.text) for q in rig.seq.cues if q.is_card] == [("pq0002", "辨識二")]
+    assert "改過的字幕" not in [q.text for q in rig.seq.cues]
+
+
+def test_shift_all_moves_the_subtitles_and_leaves_title_cards_in_place(rig, monkeypatch):
+    """全部位移 is how an imported SRT is synced; a 字卡 is placed on purpose (often pinned to a source moment)."""
+    rig.seed("字卡", "add_cue", 3.0, 5.0, "嘉賓名字", card=True)
+    assert "字卡不動" in rig.cap.b_shift.toolTip()
+    asked = stub(monkeypatch, "ask_number", -0.5)
+    with one_undo(rig, "位移字幕"):
+        rig.cap.b_shift.click()
+    assert asked and "字卡不動" in asked[0][1]
+    assert rig.cues() == [(0.5, 1.5, "第一句"), (2.5, 4.0, "第二句"), (3.0, 5.0, "嘉賓名字"), (5.5, 6.5, "第三句")]
+    for q in [q for q in rig.seq.cues if not q.is_card]:                 # only cards left: nothing to shift
+        rig.seed("字卡", "update_cue", q.id, card=True)
+    assert not rig.cap.b_shift.isEnabled()
+    asked = stub(monkeypatch, "ask_number", 1.0)
+    with untouched(rig):
+        rig.cap._shift()
+    assert asked == [] and any("沒有可位移的字幕" in m for m in rig.status)
+
+
+def test_split_without_a_selection_cuts_the_subtitle_not_the_card(rig):
+    """分割 says 在播放頭把字幕切成兩則: with nothing chosen it cuts the subtitle under the playhead, even where a 字卡 that
+    starts earlier overlaps it; a card is cut only when it is selected or is the only thing there."""
+    card = rig.seed("字卡", "add_cue", 2.5, 6.0, "字卡標題", card=True)
+
+    def cards():
+        return [(round(q.start, 3), round(q.end, 3)) for q in rig.seq.cues if q.is_card]
+
+    rig.st.set_playhead(4.0)
+    with one_undo(rig, "分割字幕"):
+        rig.cap.b_split.click()
+    assert [q.text for q in rig.seq.cues if q.is_card] == ["字卡標題"] and cards() == [(2.5, 6.0)]
+    assert [c for c in rig.cues() if c[2] in ("第二", "句")] == [(3.0, 4.0, "第二"), (4.0, 4.5, "句")]
+    rig.st.set_playhead(3.5)                                             # the card, once selected, is what gets cut
+    rig.st.select_cues([card.id])
+    rig.settle()
+    with one_undo(rig, "分割字幕"):
+        rig.cap.b_split.click()
+    assert cards() == [(2.5, 3.5), (3.5, 6.0)]
+    assert [c for c in rig.cues() if c[2] in ("第二", "句")] == [(3.0, 4.0, "第二"), (4.0, 4.5, "句")]
+    rig.st.select_cues([])
+    rig.st.set_playhead(5.0)                                             # nothing but a card under the playhead
+    rig.settle()
+    with one_undo(rig, "分割字幕"):
+        rig.cap.b_split.click()
+    assert cards() == [(2.5, 3.5), (3.5, 5.0), (5.0, 6.0)]
+
+
+def test_add_cue_is_not_cut_short_by_a_title_card(rig):
+    """A 字卡 is its own layer and may overlap subtitles: only the next SUBTITLE limits a new one's default length."""
+    rig.seed("字卡", "add_cue", 8.6, 11.0, "字卡", card=True)
+    rig.st.set_playhead(8.0)
+    with one_undo(rig, "新增字幕"):
+        rig.cap.b_add.click()
+        rig.settle()
+        ed = rig.cap.table.findChild(QLineEdit)
+        assert ed is not None
+        QTest.keyClick(ed, Qt.Key_Escape)
+        rig.settle()
+    assert [c for c in rig.cues() if c[2] in ("新字幕", "字卡")] == [(8.0, 10.0, "新字幕"), (8.6, 11.0, "字卡")]

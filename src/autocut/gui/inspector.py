@@ -803,7 +803,7 @@ class CaptionsTab(QWidget):
         self.b_split = self._button("分割", "在播放頭把字幕切成兩則", self._split, row1)
         self.b_merge = self._button("合併", "把選取的字幕合併成一則", self._merge, row1)
         self.b_delete = self._button("刪除", "刪除選取的字幕（Delete）", self._delete, row1)
-        self.b_shift = self._button("全部位移…", "把全部字幕提早或延後", self._shift, row1)
+        self.b_shift = self._button("全部位移…", "把全部字幕提早或延後（字卡不動）", self._shift, row1)
         self.b_import = self._button("匯入…", "匯入 SRT / ASS / VTT 字幕檔", self._import, row2)
         self.b_export = self._button("匯出 SRT…", "把字幕存成 SRT 檔", self._export, row2)
         self.b_auto = self._button("自動產生字幕", "用語音辨識產生字幕（選用功能，全部在本機執行）", self._auto, row2)
@@ -966,7 +966,7 @@ class CaptionsTab(QWidget):
         chosen = [q for q in seq.cues if q.id in self.state.cue_selection] if seq else []
         self.b_card.setEnabled(bool(chosen))
         self.b_card.setChecked(bool(chosen) and all(q.is_card for q in chosen))
-        self.b_shift.setEnabled(bool(cue_ids))
+        self.b_shift.setEnabled(seq is not None and any(not q.is_card for q in seq.cues))    # moves subtitles only
         self.b_export.setEnabled(bool(cue_ids))
         self.b_import.setEnabled(seq is not None and not busy)
         self.b_auto.setEnabled(seq is not None and not busy)
@@ -1078,7 +1078,7 @@ class CaptionsTab(QWidget):
         if seq is None:
             return
         t = self.state.playhead
-        later = [q.start for q in seq.cues if q.start > t + 1e-6]
+        later = [q.start for q in seq.cues if not q.is_card and q.start > t + 1e-6]     # cards are their own layer
         end = t + 2.0
         if later and min(later) - t >= 0.5:
             end = min(end, min(later))
@@ -1097,7 +1097,9 @@ class CaptionsTab(QWidget):
             return
         t, chosen = self.state.playhead, set(self.selected_ids())
         under = [q for q in seq.cues if q.start < t < q.end]
-        target = next((q for q in under if q.id in chosen), under[0] if under else None)
+        # the selected cue first; otherwise the subtitle there (a card under it is cut only when chosen or alone)
+        picked = next((q for q in under if q.id in chosen), None)
+        target = picked or next((q for q in under if not q.is_card), under[0] if under else None)
         if target is None:
             self.state.status.emit("播放頭沒有落在任何字幕上")
             return
@@ -1133,10 +1135,19 @@ class CaptionsTab(QWidget):
         if ids and self._op("刪除字幕", "remove_cues", ids):
             self.state.status.emit(f"已刪除 {len(ids)} 則字幕")
 
+    def _subtitle_ids(self) -> list[str]:
+        seq = self._seq()
+        return [q.id for q in seq.cues if not q.is_card] if seq is not None else []
+
     def _shift(self) -> None:
-        delta = ask_number(self, "全部位移", "全部字幕要位移幾秒？（負數＝提早）", 0.0)
-        if delta:
-            self._op("位移字幕", "shift_cues", delta)
+        # 字卡 are placed on purpose (often pinned to a source moment): syncing the subtitles never moves them
+        if not self._subtitle_ids():
+            self.state.status.emit("這個序列沒有可位移的字幕")
+            return
+        delta = ask_number(self, "全部位移", "全部字幕要位移幾秒？（負數＝提早；字卡不動）", 0.0)
+        subs = self._subtitle_ids()                   # read after the dialog: the cues may have changed meanwhile
+        if delta and subs:
+            self._op("位移字幕", "shift_cues", delta, subs)
 
     def _import(self) -> None:
         seq = self._seq()

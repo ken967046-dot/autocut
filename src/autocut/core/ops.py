@@ -1159,7 +1159,11 @@ def shift_cues(proj: Project, seq: Sequence, delta: float, ids: Optional[Iterabl
 def replace_cues(proj: Project, seq: Sequence, cues: Iterable, keep_cards: bool = True) -> list[CaptionCue]:
     """Replace all subtitles. Items may be CaptionCue, dicts or ``(start, end, text)`` tuples.  Title cards (字卡) are
     their own layer and stay unless ``keep_cards`` is false (importing or recognising subtitles never wipes them).
-    Returns the new cues."""
+    Ids stay unique: a new cue whose id is already taken (by a kept card or an earlier new cue -- recognised subtitles
+    come with deterministic ids like ``pq0002``, and a card may be an earlier run's ``pq0002``) gets a fresh one, or
+    every by-id edit (delete, retime, select) would hit both.  Returns the new cues."""
+    kept = [q for q in seq.cues if q.is_card] if keep_cards else []
+    taken = {q.id for q in kept}
     out: list[CaptionCue] = []
     for it in cues:
         if isinstance(it, CaptionCue):
@@ -1172,8 +1176,11 @@ def replace_cues(proj: Project, seq: Sequence, cues: Iterable, keep_cards: bool 
         q.start, q.end = _sn(seq, q.start), _sn(seq, q.end)
         if q.end < q.start + MIN_CUE - EPS:
             q.end = q.start + MIN_CUE
+        while q.id in taken:
+            q.id = new_id("q_")
+        taken.add(q.id)
         out.append(q)
-    seq.cues = ([q for q in seq.cues if q.is_card] if keep_cards else []) + out
+    seq.cues = kept + out
     seq.sort_cues()
     return out
 

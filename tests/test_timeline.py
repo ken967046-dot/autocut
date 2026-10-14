@@ -1983,6 +1983,28 @@ def test_title_cards_share_the_caption_lane_in_their_own_band(rig):
     rig.release(QPointF(q_r.center().x(), q_r.center().y()))
 
 
+def test_marquee_respects_the_card_and_subtitle_bands(rig):
+    """A rubber band selects a caption only where its own block is: a band drawn through the 字卡 band alone never picks
+    up the subtitle below it (so Delete removes only the card), and one through the subtitle band never the card."""
+    card = rig.st.op("字卡", "add_cue", 3.5, 6.5, "立恩", card=True)
+    rig.st.history.clear()
+    rig.app.processEvents()
+    third = next(q.id for q in rig.st.sequence().cues if q.text == "第三句")             # 6.0-7.0, under the card's tail
+    card_y, sub_y = rig.tl.cue_rect(card.id).center().y(), rig.tl.cue_rect(third).center().y()
+    with untouched(rig):
+        rig.drag(QPointF(rig.x(8.5), sub_y), QPointF(rig.x(6.2), sub_y + 2))           # subtitle band only
+    assert rig.st.cue_selection == {third}
+    with untouched(rig):
+        rig.drag(QPointF(rig.x(8.5), card_y), QPointF(rig.x(5.0), sub_y))              # across both bands
+    assert rig.st.cue_selection == {card.id, third}
+    with untouched(rig):
+        rig.drag(QPointF(rig.x(8.5), card_y), QPointF(rig.x(5.0), card_y + 2))         # card band only
+    assert rig.st.cue_selection == {card.id}
+    with one_undo(rig):
+        rig.key(Qt.Key_Delete)
+    assert [c[2] for c in rig.cues()] == ["第一句", "第二句", "第三句"]
+
+
 def test_without_cards_the_caption_lane_is_unchanged(rig):
     lane_r = rig.tl.track_rect(CAPTION_LANE)
     for i in range(3):
