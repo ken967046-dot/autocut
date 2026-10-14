@@ -604,7 +604,7 @@ def _judge(params, segments: Optional[list], notes: list[str], cancel) -> tuple[
     if engine == "local" or not segments:
         return None, {"engine": "local"}
     from .llm_judge import judge_sentences
-    units = hl.sentences(segments)
+    units = hl.sentences(hl.merge_fragments(segments))      # the same units Feat scores (index-aligned overrides)
     return judge_sentences(units, engine=engine, language=params.language, notes=notes, cancel=cancel)
 
 

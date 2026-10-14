@@ -23,7 +23,7 @@ import numpy as np
 
 from .captions import _CLOSERS, _is_punct, _is_strong, _timed_chars
 from .config import PLATFORM_RULES, ShortsParams, resolve_band
-from .highlights import ContentIndex, score_sentences, sentences
+from .highlights import ContentIndex, merge_fragments, score_sentences, sentences
 from .reframe import _faces_at, _ran
 
 # What was SAID dominates when a transcript / subtitle file exists ("content" + "content_hook" = 52 %).  Without text
@@ -204,7 +204,8 @@ class Feat:
                 merged.append([a, b])
         self.sil = np.asarray(merged, dtype=np.float64).reshape(-1, 2)
 
-        segs = [s for s in (segments or []) if str(s.get("text", "")).strip()]
+        # subtitle fragments (no punctuation, ~1.4 s each) are joined into clauses first (highlights.merge_fragments)
+        segs = merge_fragments([s for s in (segments or []) if str(s.get("text", "")).strip()])
         self.segments = segs
         self.has_text = bool(segs)
         self.words = transcript_words(segs)

@@ -35,11 +35,15 @@ _CATS: list[tuple[str, float, str, str]] = [
      r"[？?]|為什麼|为什么|為甚麼|怎麼會|怎么会|怎麼辦|怎么办|如何|你知道|你知不知道|有沒有想過|有没有想过|是不是|到底|難道|难道|憑什麼|凭什么"
      r"|(?i:\bwhy\b|\bhow come\b|\bwhat if\b|\bdid you know\b)"),
     ("twist", 1.3, "反轉",
-     r"沒想到|没想到|竟然|居然|結果|结果|但是|可是|不過|不过|其實|其实|原來|原来|反而|偏偏|誰知道|谁知道|後來才|后来才|突然|沒有人|没有人|真相"
-     r"|(?i:\bbut\b|\bturns out\b|\bactually\b|\bsuddenly\b|\bnobody\b)"),
+     r"沒想到|没想到|竟然|居然|原來|原来|反而|偏偏|誰知道|谁知道|後來才|后来才|突然|沒有人|没有人|真相|結果竟|结果竟"
+     r"|(?i:\bturns out\b|\bsuddenly\b|\bnobody\b)"),
+    # everyday connectives: in spoken Mandarin 其實／但是 open half the sentences (a 9-minute talk had 「其實」 30+ times),
+    # so they only nudge -- they are NOT a twist by themselves (calibration on the first real video, 2026-10-14)
+    ("contrast", 0.25, "轉折",
+     r"其實|其实|但是|可是|不過|不过|結果|结果|(?i:\bbut\b|\bactually\b)"),
     ("emotion", 1.1, "情緒",
      r"超級|超扯|太扯|太誇張|太夸张|誇張|夸张|離譜|离谱|傻眼|嚇死|吓死|嚇到|吓到|天啊|天哪|我的天|笑死|崩潰|崩溃|氣死|气死|瘋了|疯了|可怕|恐怖"
-     r"|厲害|厉害|絕了|绝了|好笑|感動|感动|哭了|爆炸|炸裂|震撼|不敢相信|[！!]{1,}|哇+"
+     r"|厲害|厉害|絕了|绝了|好笑|感動|感动|哭了|爆炸|炸裂|震撼|不敢相信|爆棚|佩服|勇氣|勇气|氣魄|气魄|[！!]{1,}|哇+"
      r"|(?i:\bcrazy\b|\binsane\b|\bunbelievable\b|\bamazing\b|\bwow\b|\bomg\b)"),
     ("value", 1.0, "乾貨",
      r"重點|重点|關鍵|关键|秘訣|秘诀|祕訣|方法|技巧|步驟|步骤|一定要|千萬|千万|記住|记住|最重要|結論|结论|核心|原因|建議|建议|注意|避免|錯誤|错误"
@@ -48,10 +52,14 @@ _CATS: list[tuple[str, float, str, str]] = [
     ("stakes", 0.8, "利害",
      r"第一次|從來沒|从来没|差點|差点|失敗|失败|賠了|赔了|賺了|赚了|賺錢|赚钱|虧|亏|破產|破产|後悔|后悔|代價|代价|風險|风险|危險|危险|免費|免费"
      r"|唯一|所有人|每個人|每个人|一輩子|一辈子|改變|改变|人生"
-     r"|(?i:\bfirst time\b|\bnever\b|\bfailed\b|\bmoney\b|\brisk\b|\bregret\b)"),
+     r"|被騙|被骗|騙了|骗了|詐騙|诈骗|受騙|受骗|上當|上当|受害|欺騙|欺骗|話術|话术|不公不義|不公不义|不公平|不平等|漏洞|負債|负债"
+     r"|不敢|害怕|都會怕|都会怕|險地|险地|和解|律師|律师"
+     r"|(?i:\bfirst time\b|\bnever\b|\bfailed\b|\bmoney\b|\brisk\b|\bregret\b|\bscam\b|\bscammed\b|\blawyer\b)"),
     ("number", 0.8, "具體數字",
      r"[0-9０-９]+(?:[.．,][0-9]+)?\s*(?:個|个|種|种|步|招|點|点|%|％|倍|元|塊|块|萬|万|億|亿|分鐘|分钟|秒|年|天|次|小時|小时|公斤|歲|岁|人)"
-     r"|[一二兩两三四五六七八九十百千萬万億亿]+(?:個|个|種|种|步|招|點|点|倍|元|塊|块|萬|万|億|亿|分鐘|分钟|年|天|次|歲|岁)"),
+     # Chinese numerals, but never a bare 一 (一個／一種／一點／一次 are articles, not specific numbers)
+     r"|(?:[二兩两三四五六七八九十百千萬万億亿]|一[十百千萬万億亿])[一二兩两三四五六七八九十百千萬万億亿]*"
+     r"(?:個|个|種|种|步|招|點|点|倍|元|塊|块|萬|万|億|亿|分鐘|分钟|年|天|次|歲|岁)"),
     ("opinion", 0.6, "鮮明觀點",
      r"絕對|绝对|根本|完全|不可能|必須|必须|千萬不要|千万不要|老實說|老实说|說實話|说实话|坦白說|坦白说|我敢說|我敢说|一定是|錯了|错了|最好|最爛|最烂"
      r"|(?i:\babsolutely\b|\bnever ever\b|\bhonestly\b|\bthe best\b|\bthe worst\b)"),
@@ -67,7 +75,9 @@ CATEGORY_LABEL["llm"] = "AI 判定"
 FILLERS_PURE = ("嗯", "呃", "額", "欸", "誒", "唉", "噢", "um", "uh", "uhm", "umm", "erm", "hmm", "mm")
 FILLERS_CONTEXT = ("那個", "那个", "就是說", "就是说", "就是", "然後", "然后", "對對對", "对对对", "對對", "对对", "對", "对",
                    "啊", "阿", "喔", "哦", "那", "這個", "这个", "基本上", "怎麼說", "怎么说", "所以說", "所以说", "like", "so",
-                   "you know", "i mean", "kind of", "sort of")
+                   "you know", "i mean", "kind of", "sort of",
+                   # listener back-channels in a conversation (「沒錯沒錯」「是」「OK」): only when they stand alone
+                   "沒錯", "没错", "是", "ok", "okay")
 _PURE_RE = re.compile(r"^(?:" + "|".join(re.escape(f) for f in FILLERS_PURE) + r")+$", re.IGNORECASE)
 _FILLER_ANY = re.compile("|".join(re.escape(f) for f in sorted(FILLERS_PURE + FILLERS_CONTEXT, key=len, reverse=True)),
                          re.IGNORECASE)
@@ -166,6 +176,59 @@ def sentences(segments: Optional[Sequence[dict]]) -> list[Sentence]:
     return fixed
 
 
+MERGE_GAP = 0.35            # fragments closer than this belong to the same clause ...
+MERGE_SOFT_GAP = 0.1        # ... and once a clause is MERGE_SOFT_SECONDS long, even a short pause ends it
+MERGE_SOFT_SECONDS = 3.5
+MERGE_MAX_SECONDS = 9.0
+
+
+def _ends_strong(text: str) -> bool:
+    t = text.rstrip().rstrip("」』）)】》〉”’\"'")
+    return bool(t) and t[-1] in "。！？!?；;"
+
+
+def merge_fragments(segments: Optional[Sequence[dict]]) -> list[dict]:
+    """Join subtitle fragments into clauses before scoring.
+
+    Auto-generated subtitles are often ~1.4 s pieces without any punctuation (「他遇到很多不」「公不義的事情」), so a
+    phrase is split across cues and the lexicon never sees it whole.  Consecutive segments are joined while the previous
+    one does not end a sentence (。！？), the gap is under ``MERGE_GAP`` and the clause stays under ``MERGE_MAX_SECONDS``;
+    a clause already ``MERGE_SOFT_SECONDS`` long also ends at any pause of ``MERGE_SOFT_GAP``.  Punctuated, sentence-length
+    segments (speech recognition, hand-made subtitles) pass through unchanged.  Word timings travel along; ``asset_id``
+    of the first segment is kept."""
+    out: list[dict] = []
+    for seg in segments or []:
+        text = str(seg.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            a, b = float(seg["start"]), float(seg["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        cur = out[-1] if out else None
+        if cur is not None:
+            gap = a - float(cur["end"])
+            length = float(cur["end"]) - float(cur["start"])
+            join = (not _ends_strong(cur["text"]) and -0.05 <= gap < MERGE_GAP
+                    and b - float(cur["start"]) <= MERGE_MAX_SECONDS
+                    and not (length >= MERGE_SOFT_SECONDS and gap >= MERGE_SOFT_GAP))
+            if join:
+                left, right = cur["text"], text
+                sep = " " if (left[-1:].isascii() and left[-1:].isalnum() and right[:1].isascii() and right[:1].isalnum()) else ""
+                cur["text"] = left + sep + right
+                cur["end"] = max(float(cur["end"]), b)
+                if seg.get("words") or cur.get("words"):
+                    cur["words"] = list(cur.get("words") or []) + list(seg.get("words") or [])
+                continue
+        d = {"start": a, "end": b, "text": text}
+        if seg.get("words"):
+            d["words"] = list(seg["words"])
+        if "asset_id" in seg:
+            d["asset_id"] = seg["asset_id"]
+        out.append(d)
+    return out
+
+
 def lexical_signals(text: str) -> tuple[float, list[str]]:
     """``(raw score, categories strongest first)``: every category counts at most twice."""
     raw = 0.0
@@ -183,10 +246,8 @@ def _filler_ratio(s: Sentence) -> float:
     chars = content_chars(s.text)
     if chars == 0:
         return 0.0
-    if s.words:
-        toks = [w[2] for w in s.words]
-        filler = sum(content_chars(t) for i, t in enumerate(toks)
-                     if is_filler(t, toks[i - 1] if i else "", toks[i + 1] if i + 1 < len(toks) else ""))
+    if s.words:                                            # the same run-aware rule filler removal uses
+        filler = sum(content_chars(w) for _a, _b, w in filler_spans([s]))
         return min(1.0, filler / chars)
     if content_chars(_FILLER_ANY.sub("", s.text)) == 0:
         return 1.0                                            # nothing but fillers: 「嗯，那個，就是說。」

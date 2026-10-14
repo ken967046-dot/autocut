@@ -387,7 +387,7 @@ def plan_longform(proj: Project, asset_id: str, params: Optional[LongformParams]
     overrides, judge_info = None, {"engine": "local"}
     if segs and p.highlight_engine != "local" and p.mode == "highlights":
         from .llm_judge import judge_sentences
-        overrides, judge_info = judge_sentences(hl.sentences(segs), engine=p.highlight_engine, language=p.language,
+        overrides, judge_info = judge_sentences(hl.sentences(hl.merge_fragments(segs)), engine=p.highlight_engine, language=p.language,
                                                 notes=notes, cancel=cancel)
     feat = sc.Feat(ev, segs, overrides)
     word_units = hl.sentences(hl.word_segments(ev, asset))

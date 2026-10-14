@@ -300,3 +300,38 @@ def test_ai_judge_client_init_failure_and_secret_free_notes(tmp_path, monkeypatc
     class Http(Exception):
         status_code = 401
     assert "金鑰無效" in lj._safe(Http("x")) and "429" in lj._safe(type("R", (Exception,), {"status_code": 429})())
+
+
+# ------------------------------------------------------------------ calibration on the first real video (2026-10-14)
+def test_unpunctuated_subtitle_fragments_are_merged_into_clauses():
+    cues = [(32.70, 33.73, "他遇到很多不"), (33.73, 34.73, "公不義的事情"), (34.80, 36.90, "我們可以在這邊來為他發聲"),
+            (37.40, 38.40, "所以真的我自己個人吶")]
+    segs = hl.merge_fragments([{"start": a, "end": b, "text": t} for a, b, t in cues])
+    assert segs[0]["text"].startswith("他遇到很多不公不義的事情")              # the split phrase is whole again
+    assert len(segs) == 2 and segs[1]["start"] == 37.40                       # a 0.5 s pause ends the clause
+    assert "stakes" in hl.lexical_signals(segs[0]["text"])[1]
+    # punctuated, sentence-length segments pass through unchanged
+    punct = [{"start": 0, "end": 3, "text": "大家好。"}, {"start": 3.05, "end": 6, "text": "今天聊加盟。"}]
+    assert [s["text"] for s in hl.merge_fragments(punct)] == ["大家好。", "今天聊加盟。"]
+    # a clause never grows past MERGE_MAX_SECONDS, word timings travel along
+    many = [{"start": i * 1.0, "end": i * 1.0 + 0.98, "text": f"片段{i}", "words": [{"start": i, "end": i + 0.9, "word": f"片段{i}"}]}
+            for i in range(30)]
+    merged = hl.merge_fragments(many)
+    assert all(s["end"] - s["start"] <= hl.MERGE_MAX_SECONDS + 1e-9 for s in merged)
+    assert sum(len(s["words"]) for s in merged) == 30
+
+
+def test_everyday_connectives_and_articles_are_not_highlights():
+    # 「其實」「但是」 open half the sentences of spoken Mandarin: a weak nudge, not a twist
+    raw_conn, tags_conn = hl.lexical_signals("其實主要是因為這一年多")
+    raw_twist, tags_twist = hl.lexical_signals("沒想到我竟然被騙了")
+    assert tags_conn == ["contrast"] and raw_conn < 0.5 and "twist" in tags_twist and raw_twist > 2.0
+    # 一個／一種 are articles; real numbers still count
+    assert hl.lexical_signals("弄拙成巧的一個一個狀況")[0] == 0.0
+    for t in ("大概有80%以上的案件", "三個步驟", "一萬塊", "兩年"):
+        assert "number" in hl.lexical_signals(t)[1], t
+    # listener back-channels are fillers only when they stand alone
+    u = hl.sentences([{"start": 0, "end": 2, "text": "沒錯沒錯沒錯", "words": _w(["沒錯", "沒錯", "沒錯"])}])
+    assert hl.filler_spans(u) and hl.score_sentences(u)[0].score == 0.0
+    u2 = hl.sentences([{"start": 0, "end": 2, "text": "是我提出的", "words": _w(["是", "我", "提出的"])}])
+    assert hl.filler_spans(u2) == []
