@@ -1942,3 +1942,49 @@ def test_drop_while_a_drag_is_in_progress_aborts_the_gesture(rig):
     rig.drag_leave()
     rig.release(rig.clip_pt("D", dx=40))
     assert rig.clip("D").start == 2.0
+
+
+# ===================================================================================================== title cards
+def test_title_cards_share_the_caption_lane_in_their_own_band(rig):
+    """With a 字卡 overlapping a subtitle, the card takes the upper part of the caption lane and the subtitle the lower
+    part: both are drawn, both are clickable, and dragging the card moves only the card (one undo step)."""
+    lane_r = rig.tl.track_rect(CAPTION_LANE)
+    full = rig.tl.cue_rect(rig.cue_id(1))                                         # 第二句 3.0-4.5, no cards yet
+    assert full.top() >= lane_r.top() and full.height() > 20
+    card = rig.st.op("字卡", "add_cue", 3.5, 6.5, "立恩（Ken桑的前輩）", card=True)
+    rig.st.history.clear()
+    rig.app.processEvents()
+    sub_r, card_r = rig.tl.cue_rect(rig.cue_id(1)), rig.tl.cue_rect(card.id)
+    lane2 = rig.tl.track_rect(CAPTION_LANE)
+    assert lane2.height() > lane_r.height()                                     # the lane grows for the card band
+    assert card_r.bottom() < sub_r.top() and card_r.top() == full.top() and lane2.bottom() - 4 <= sub_r.bottom() <= lane2.bottom()
+    assert card_r.height() >= 14 and sub_r.height() >= 20
+    rig.grab("title_card")
+    # a click in the overlap picks by height: upper = card, lower = subtitle
+    x = rig.x(4.0)
+    rig.click(QPointF(x, card_r.center().y()))
+    assert rig.st.cue_selection == {card.id}
+    rig.click(QPointF(x, sub_r.center().y()))
+    assert rig.st.cue_selection == {rig.cue_id(1)}
+    # drag the card by +1 s: only the card moves
+    before_sub = rig.cues()[1]
+    p0 = QPointF(rig.x(6.0), card_r.center().y())
+    with one_undo(rig):
+        rig.drag(p0, QPointF(p0.x() + rig.tl.pps * 1.0, p0.y()))
+    q = rig.st.sequence().find_cue(card.id)
+    assert (round(q.start, 3), round(q.end, 3)) == (4.5, 7.5) and q.is_card
+    assert before_sub in rig.cues()
+    # the ghost of a dragged card sits in the card band
+    q_r = rig.tl.cue_rect(card.id)
+    rig.press(QPointF(q_r.center().x(), q_r.center().y()))
+    rig.move(QPointF(q_r.center().x() + 30, q_r.center().y()))
+    ghost = rig.tl._ov.ghosts[0][0]
+    assert ghost.top() == pytest.approx(q_r.top(), abs=1) and ghost.height() == pytest.approx(q_r.height(), abs=1)
+    rig.release(QPointF(q_r.center().x(), q_r.center().y()))
+
+
+def test_without_cards_the_caption_lane_is_unchanged(rig):
+    lane_r = rig.tl.track_rect(CAPTION_LANE)
+    for i in range(3):
+        r = rig.tl.cue_rect(rig.cue_id(i))
+        assert r.top() >= lane_r.top() and r.bottom() <= lane_r.bottom() and r.height() >= lane_r.height() - 10

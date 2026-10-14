@@ -317,13 +317,33 @@ class CaptionStyle:
         return cls(**d)
 
 
+CARD_COLOR = "#FFE14D"
+
+
+def card_style(style: CaptionStyle) -> CaptionStyle:
+    """The look of title cards (字卡), derived from the sequence's subtitle style so a font change applies to both: a
+    larger bold line in a dark box near the top -- in the middle when the subtitles themselves sit at the top.  The
+    renderer (ASS) and the preview monitor both draw cards with this one style."""
+    return CaptionStyle(font=style.font, size=round(style.size * 1.15, 5), bold=True, color=CARD_COLOR,
+                        outline_color="#000000", outline=0.0, shadow=0.0,
+                        position="center" if style.position == "top" else "top", margin=0.075,
+                        max_chars=max(6, min(int(style.max_chars), 14)), box=True, box_color="#000000",
+                        box_opacity=1.0)       # opaque: libass draws one box per font run, a see-through
+                                               # box would show darker seams where runs overlap (CJK + Latin)
+
+
 @dataclass
 class CaptionCue:
     id: str
     start: float
     end: float
     text: str = ""
-    style: dict = field(default_factory=dict)   # per-cue overrides (reserved)
+    style: dict = field(default_factory=dict)   # per-cue overrides; {"kind": "card"} = a title card (字卡)
+
+    @property
+    def is_card(self) -> bool:
+        """A title card (字卡): shown at the top in a box, on its own layer -- it may overlap the subtitles."""
+        return isinstance(self.style, dict) and self.style.get("kind") == "card"
 
     def to_dict(self) -> dict:
         return {"id": self.id, "start": self.start, "end": self.end, "text": self.text, "style": dict(self.style)}

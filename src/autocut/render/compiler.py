@@ -24,13 +24,14 @@ from fractions import Fraction
 from typing import Optional
 
 from ..core.geometry import interp_keys
-from ..core.project import AUDIO, VIDEO, Asset, CaptionStyle, Clip, Project, Sequence, ordered_clips
+from ..core.project import AUDIO, VIDEO, Asset, CaptionStyle, Clip, Project, Sequence, card_style, ordered_clips
 from ..core.timecode import fps_fraction, frame_of
 from ..media.ffmpeg import FFmpegInfo
 from ..util import canonical_json, sha256_hex
 from .ass import build_ass
 
-RENDER_VERSION = 7          # 7: sound that starts after the picture in the file keeps that offset (``first_pts=0``, no PTS rebase)
+RENDER_VERSION = 8          # 8: captions wrap to what fits across the frame (9:16 lines no longer run off the edges)
+                            # 7: sound that starts after the picture in the file keeps that offset (``first_pts=0``, no PTS rebase)
 #                             6: the picture keeps its place relative to the sound after ``-ss`` (no PTS rebase of the first frame)
 MAX_SEGMENT_SECONDS = 30.0
 AUDIO_RATE = 48000
@@ -87,6 +88,7 @@ class Segment:
     v: list = field(default_factory=list)
     a: list = field(default_factory=list)
     cues: list = field(default_factory=list)
+    cards: list = field(default_factory=list)       # title cards (字卡), same (start, end, text) form as ``cues``
 
     @property
     def n(self) -> int:
@@ -107,6 +109,7 @@ class Compiled:
     style: CaptionStyle
     background: str
     stats: dict = field(default_factory=dict)
+    cards: list = field(default_factory=list)       # title cards (字卡): burned in, never written to the .srt
 
     @property
     def total_frames(self) -> int:
@@ -265,7 +268,9 @@ def compile_sequence(proj: Project, seq: Sequence, out_w: Optional[int] = None, 
             ln = base + (1 if i < rem else 0)
             spans.append((s, s + ln))
             s += ln
-    cues = [(q.start, q.end, q.text) for q in sorted(seq.cues, key=lambda q: q.start) if q.text.strip()]
+    ordered = [q for q in sorted(seq.cues, key=lambda q: q.start) if q.text.strip()]
+    cues = [(q.start, q.end, q.text) for q in ordered if not q.is_card]
+    cards = [(q.start, q.end, q.text) for q in ordered if q.is_card]
     segments: list[Segment] = []
     for idx, (f0, f1) in enumerate(spans):
         seg = Segment(idx, f0, f1)
@@ -273,9 +278,10 @@ def compile_sequence(proj: Project, seq: Sequence, out_w: Optional[int] = None, 
         seg.a = [a for a in aclips if a.cs < f1 and a.ce > f0]
         t0, t1 = f0 / fps, f1 / fps
         seg.cues = [c for c in cues if c[1] > t0 and c[0] < t1]
+        seg.cards = [c for c in cards if c[1] > t0 and c[0] < t1]
         segments.append(seg)
     return Compiled(seq.id, W, H, fps, fps_fraction(fps), fa, fb, segments, cues, seq.caption_style, seq.background,
-                    {"video_clips": len(vclips), "audio_clips": len(aclips)})
+                    {"video_clips": len(vclips), "audio_clips": len(aclips)}, cards)
 
 
 # -------------------------------------------------------------------------- signature
@@ -304,7 +310,7 @@ def segment_signature(comp: Compiled, seg: Segment, enc: EncodeSettings) -> str:
         return {"p": a.asset.path, "sz": size, "mt": mt, "in": a.clip.src_in, "spd": a.clip.speed, "cs": a.cs,
                 "ce": a.ce, "afi": a.afi, "afo": a.afo, "g": a.gain}
 
-    burn = enc.burn_captions and bool(seg.cues)
+    burn = enc.burn_captions and bool(seg.cues or seg.cards)
     payload = {
         "rv": RENDER_VERSION, "w": comp.width, "h": comp.height, "fps": _frac_str(comp.fps_frac), "f0": seg.f0,
         "f1": seg.f1, "enc": [enc.encoder, enc.crf, enc.x264_preset, enc.scale_flags], "bg": comp.background,
@@ -312,13 +318,17 @@ def segment_signature(comp: Compiled, seg: Segment, enc: EncodeSettings) -> str:
         "cues": [list(c) for c in seg.cues] if burn else [],
         "style": comp.style.to_dict() if burn else None, "fonts": enc.fontsdir if burn else None,
     }
+    if burn and seg.cards:                    # only when present: segments without cards keep their cached renders
+        payload["cards"] = [list(c) for c in seg.cards]
+        payload["card_style"] = card_style(comp.style).to_dict()
     return sha256_hex(canonical_json(payload))
 
 
 def segment_ass(comp: Compiled, seg: Segment, enc: EncodeSettings, info: FFmpegInfo) -> Optional[str]:
-    if not (enc.burn_captions and seg.cues and info.has_ass):
+    if not (enc.burn_captions and (seg.cues or seg.cards) and info.has_ass):
         return None
-    return build_ass(seg.cues, comp.style, comp.width, comp.height, t0=seg.f0 / comp.fps, t1=seg.f1 / comp.fps)
+    return build_ass(seg.cues, comp.style, comp.width, comp.height, t0=seg.f0 / comp.fps, t1=seg.f1 / comp.fps,
+                     cards=seg.cards)
 
 
 # ----------------------------------------------------------------- filtergraph building

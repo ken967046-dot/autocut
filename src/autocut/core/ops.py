@@ -1052,17 +1052,19 @@ def clear_transform_keys(proj: Project, seq: Sequence, clip_id: str) -> None:
 
 
 # --------------------------------------------------------------------- captions
-def add_cue(proj: Project, seq: Sequence, start: float, end: float, text: str = "") -> CaptionCue:
+def add_cue(proj: Project, seq: Sequence, start: float, end: float, text: str = "", card: bool = False) -> CaptionCue:
+    """A new caption; ``card=True``: a title card (字卡, its own layer at the top)."""
     s = _sn(seq, start)
     e = _sn(seq, max(end, s + MIN_CUE))
-    q = CaptionCue(new_id("q_"), s, e, text)
+    q = CaptionCue(new_id("q_"), s, e, text, {"kind": "card"} if card else {})
     seq.cues.append(q)
     seq.sort_cues()
     return q
 
 
 def update_cue(proj: Project, seq: Sequence, cue_id: str, start: Optional[float] = None,
-               end: Optional[float] = None, text: Optional[str] = None) -> CaptionCue:
+               end: Optional[float] = None, text: Optional[str] = None, card: Optional[bool] = None) -> CaptionCue:
+    """Change a caption's times and/or text; ``card`` turns it into a title card (字卡) or back into a subtitle."""
     q = seq.find_cue(cue_id)
     if q is None:
         raise OpError("找不到這則字幕")
@@ -1076,6 +1078,11 @@ def update_cue(proj: Project, seq: Sequence, cue_id: str, start: Optional[float]
     q.start, q.end = s, e
     if text is not None:
         q.text = text
+    if card is not None and bool(card) != q.is_card:
+        style = {k: v for k, v in (q.style if isinstance(q.style, dict) else {}).items() if k != "kind"}
+        if card:
+            style["kind"] = "card"
+        q.style = style
     seq.sort_cues()
     return q
 
@@ -1116,6 +1123,8 @@ def merge_cues(proj: Project, seq: Sequence, ids: Iterable[str]) -> CaptionCue:
     sel = sorted((q for q in seq.cues if q.id in set(ids)), key=lambda q: q.start)
     if len(sel) < 2:
         raise OpError("請選擇至少兩則字幕")
+    if len({q.is_card for q in sel}) > 1:
+        raise OpError("字卡和字幕不能合併")
 
     def cjk(ch: str) -> bool:
         return bool(ch) and ord(ch) >= 0x2E80
@@ -1147,8 +1156,10 @@ def shift_cues(proj: Project, seq: Sequence, delta: float, ids: Optional[Iterabl
     seq.sort_cues()
 
 
-def replace_cues(proj: Project, seq: Sequence, cues: Iterable) -> list[CaptionCue]:
-    """Replace all captions. Items may be CaptionCue, dicts or ``(start, end, text)`` tuples."""
+def replace_cues(proj: Project, seq: Sequence, cues: Iterable, keep_cards: bool = True) -> list[CaptionCue]:
+    """Replace all subtitles. Items may be CaptionCue, dicts or ``(start, end, text)`` tuples.  Title cards (字卡) are
+    their own layer and stay unless ``keep_cards`` is false (importing or recognising subtitles never wipes them).
+    Returns the new cues."""
     out: list[CaptionCue] = []
     for it in cues:
         if isinstance(it, CaptionCue):
@@ -1162,7 +1173,7 @@ def replace_cues(proj: Project, seq: Sequence, cues: Iterable) -> list[CaptionCu
         if q.end < q.start + MIN_CUE - EPS:
             q.end = q.start + MIN_CUE
         out.append(q)
-    seq.cues = out
+    seq.cues = ([q for q in seq.cues if q.is_card] if keep_cards else []) + out
     seq.sort_cues()
     return out
 

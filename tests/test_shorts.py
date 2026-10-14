@@ -745,3 +745,25 @@ def test_propose_shorts_whole_clip_music_and_cancel(real_proj, media_dir):
     assert len(plan2.assets) == 1 and plan2.assets[0]["id"].startswith("pa_") and plan2.assets[0]["has_audio"]
     assert Sequence.from_dict(plan2.sequences[0]).audio_tracks[0].clips[0].asset_id == plan2.assets[0]["id"]
     assert propose_shorts(lonely, land.id, ShortsParams(captions="off", music_path=str(music))).sha256() == plan2.sha256()
+
+
+def test_a_dropped_back_channel_does_not_cut_the_caption_before_it_short():
+    """A one-word 「是」 squeezed between two lines has no room and is dropped -- the line before it must then run until
+    the gap before the NEXT SHOWN caption, not stop where the dropped word would have started (real episode: 7.5 chars/s
+    captions with a 0.27 s hole after them)."""
+    segs = [{"start": 0.0, "end": 1.0, "text": "一二三四五六"}, {"start": 1.0, "end": 1.1, "text": "是"},
+            {"start": 1.15, "end": 3.0, "text": "後面的一句話"}]
+    cues = cap.cues_for_pieces(segs, [cap.Piece("a", 0.0, 3.0, 0.0)])
+    assert [q.text for q in cues] == ["一二三四五六", "後面的一句話"]
+    assert cues[0].end == pytest.approx(1.15 - cap.CAP_GAP)
+
+
+def test_first_cut_split_leaves_a_real_second_half_when_the_clip_allows():
+    """A first clip just over the 2-second limit (2.17 s, a cold open) must not end in a 0.27 s zoomed flash."""
+    ev = fake_ev(60.0, burst=60.0, gap=0.0)                         # one long burst: equal energy everywhere
+    feat = sc.Feat(ev, None)
+    t = sc.first_cut_time(feat, 10.0, 12.17, 2.05)
+    assert t is not None and 10.0 + 1.0 - 1e-9 <= t <= 12.17 - sc.SECOND_HALF_MIN + 1e-9
+    # a clip so short that 0.6 s cannot be kept still gets a valid split (the old 0.25 s floor)
+    t2 = sc.first_cut_time(feat, 10.0, 11.3, 1.0)
+    assert t2 is not None and t2 <= 11.3 - 0.25 + 1e-9

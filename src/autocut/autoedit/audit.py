@@ -23,6 +23,7 @@ from ..analysis.evidence import EVIDENCE_VERSION, AnalyzeParams, Evidence, cache
 from ..core.plan import ERROR, INFO, WARN, AuditReceipt, EditPlan, Finding, PlanError
 from ..core.project import Clip, Project, Sequence, Track, ordered_clips, validate_sequence
 from ..core.timecode import EPS
+from .captions import CAP_GAP
 from ..util import canonical_json, fingerprint_file, sha256_hex
 from .apply import plan_asset_map
 from .config import PLATFORM_RULES, AuditRules, ShortsParams, resolve_band
@@ -370,9 +371,18 @@ def _r_shorts_mid_word(c: _Ctx) -> None:
                               f"{seq.id}/{clip.id}")
 
 
+def _subs(seq: Sequence) -> list:
+    """The subtitles of ``seq`` (title cards excluded: reading speed, density and length rules are for subtitles)."""
+    return [q for q in seq.cues if not q.is_card]
+
+
 def _r_caption_reading(c: _Ctx) -> None:
+    """Too fast to read.  An ERROR when the caption could have stayed up long enough (free time until the next
+    subtitle or the end) -- the planner should have used it; only a WARNING when the speech itself is that fast (the
+    caption already runs into the next one): no timing can fix verbatim subtitles of fast talk, only shorter text."""
     for seq in c.seqs:
-        for q in seq.cues:
+        subs = sorted(_subs(seq), key=lambda q: (q.start, q.end, q.id))
+        for i, q in enumerate(subs):
             dur = q.end - q.start
             n = _chars(q.text)
             if n == 0 or dur <= 0:
@@ -380,8 +390,19 @@ def _r_caption_reading(c: _Ctx) -> None:
             cps = n / dur
             where = f"{seq.id}/{q.id}"
             if cps > c.rules.reading_fail_cps + EPS:
-                c.add("caption.reading", ERROR,
-                      f"字幕「{_snippet(q.text)}」閱讀速度 {cps:.1f} 字/秒，超過上限 {c.rules.reading_fail_cps:g} 字/秒，看不完", where)
+                # how long it could stay up: until the planner's gap before the next subtitle (or the end), on the
+                # frame grid the times are snapped to (rounded down: a caption cannot end between two frames)
+                nxt = subs[i + 1].start - CAP_GAP if i + 1 < len(subs) else seq.duration
+                fps = max(float(seq.fps), 1.0)
+                room = max(math.floor(nxt * fps + 1e-6) / fps, q.end) - q.start
+                if n / room > c.rules.reading_fail_cps + EPS:
+                    c.add("caption.reading", WARN,
+                          f"字幕「{_snippet(q.text)}」閱讀速度 {cps:.1f} 字/秒，超過 {c.rules.reading_fail_cps:g} 字/秒："
+                          "說話本身就這麼快（字幕已經接到下一句），觀眾可能看不完；可以刪減這句字幕的文字", where)
+                else:
+                    c.add("caption.reading", ERROR,
+                          f"字幕「{_snippet(q.text)}」閱讀速度 {cps:.1f} 字/秒，超過上限 {c.rules.reading_fail_cps:g} 字/秒，"
+                          "看不完（後面還有空檔，應該顯示久一點）", where)
             elif cps > c.rules.reading_warn_cps + EPS:
                 c.add("caption.reading", WARN,
                       f"字幕「{_snippet(q.text)}」閱讀速度 {cps:.1f} 字/秒，偏快（建議不超過 {c.rules.reading_warn_cps:g} 字/秒）", where)
@@ -391,29 +412,31 @@ def _r_caption_rate(c: _Ctx) -> None:
     captions_on = str(_brief_flat(c.plan).get("captions", "off")) in ("auto", "file")
     for seq in c.seqs:
         dur = seq.duration
-        if dur < 20.0 - EPS or not (seq.cues or captions_on):
+        if dur < 20.0 - EPS or not (_subs(seq) or captions_on):
             continue
-        rate = len(seq.cues) / (dur / 60.0)
+        rate = len(_subs(seq)) / (dur / 60.0)
         if rate < c.rules.caption_rate_warn_per_min - EPS:
-            what = ("設定了要字幕，但計畫裡沒有任何字幕（可能沒有語音辨識結果）" if not seq.cues else
+            what = ("設定了要字幕，但計畫裡沒有任何字幕（可能沒有語音辨識結果）" if not _subs(seq) else
                     f"字幕換頁率只有每分鐘 {rate:.1f} 條，低於 {c.rules.caption_rate_warn_per_min:g}，畫面會有很長的時間沒有字幕")
             c.add("caption.rate", WARN, f"{seq.name}：{what}", seq.id)
 
 
 def _r_caption_overlap(c: _Ctx) -> None:
     for seq in c.seqs:
-        prev = None
-        for q in sorted(seq.cues, key=lambda q: (q.start, q.end, q.id)):
-            if prev is not None and prev.end - q.start > c.rules.max_caption_overlap + EPS:
-                c.add("caption.overlap", ERROR,
-                      f"字幕「{_snippet(q.text)}」與前一條字幕重疊 {prev.end - q.start:.2f} 秒", f"{seq.id}/{q.id}")
-            if prev is None or q.end > prev.end:
-                prev = q
+        for layer in (_subs(seq), [q for q in seq.cues if q.is_card]):   # title cards are their own layer
+            prev = None
+            for q in sorted(layer, key=lambda q: (q.start, q.end, q.id)):
+                if prev is not None and prev.end - q.start > c.rules.max_caption_overlap + EPS:
+                    what = "字卡" if q.is_card else "字幕"
+                    c.add("caption.overlap", ERROR,
+                          f"{what}「{_snippet(q.text)}」與前一條{what}重疊 {prev.end - q.start:.2f} 秒", f"{seq.id}/{q.id}")
+                if prev is None or q.end > prev.end:
+                    prev = q
 
 
 def _r_caption_short(c: _Ctx) -> None:
     for seq in c.seqs:
-        for q in seq.cues:
+        for q in _subs(seq):
             if 0 < q.end - q.start < c.rules.min_cue_seconds - EPS:
                 c.add("caption.short", WARN,
                       f"字幕「{_snippet(q.text)}」只顯示 {q.end - q.start:.2f} 秒（建議至少 {c.rules.min_cue_seconds:g} 秒）",
@@ -422,7 +445,7 @@ def _r_caption_short(c: _Ctx) -> None:
 
 def _r_caption_long(c: _Ctx) -> None:
     for seq in c.seqs:
-        for q in seq.cues:
+        for q in _subs(seq):
             n = _chars(q.text)
             if n > c.rules.max_cue_chars:
                 c.add("caption.long", WARN,

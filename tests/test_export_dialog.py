@@ -770,6 +770,18 @@ def test_caption_options_need_real_text_cues(qapp, make_dialog, assets):
     assert not real.chk_srt.isChecked()                                      # the .srt copy is opt-in
 
 
+
+def test_title_cards_are_burned_but_never_offered_as_an_srt(qapp, make_dialog, assets):
+    state = build_state(assets, cues=[(0.0, 1.0, "字卡")])
+    seq = state.sequence()
+    state.op("字卡", "update_cue", seq.cues[0].id, card=True)
+    dlg = make_dialog(state)
+    assert dlg.chk_burn.isEnabled() and dlg.chk_burn.isChecked() and "字卡" in dlg.chk_burn.text()
+    assert not dlg.chk_srt.isEnabled() and "字卡不會寫進 .srt" in dlg.chk_srt.toolTip()
+    both = make_dialog(build_state(assets, cues=[(0.0, 1.0, "字幕")]))
+    assert both.chk_srt.isEnabled() and both.chk_burn.text() == "把字幕燒進畫面"
+
+
 def test_range_option_shows_the_marked_times(qapp, make_dialog, tmp_path):
     state, _ = fake_state(tmp_path, rng=(0.5, 2.0))
     dlg = make_dialog(state)

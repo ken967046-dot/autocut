@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..core.plan import EditPlan
-from ..core.project import Asset, CaptionStyle, Clip, Project, Sequence, Transform
+from ..core.project import Asset, CaptionCue, CaptionStyle, Clip, Project, Sequence, Transform
 from ..core.timecode import frame_of, snap_time
 from ..util import IdGen, sha256_hex
 from . import highlights as hl
@@ -21,6 +21,7 @@ from . import scoring as sc
 from .api import AutoEditError, Cancelled
 from .captions import Piece, _reading_chars, cues_for_pieces, source_segments
 from .config import AuditRules, ShortsParams
+from . import cutlist as cl
 from .reframe import reframe_keys
 
 MIN_CLIP = 0.25             # pieces shorter than this are never cut out (spec 3.7)
@@ -163,34 +164,36 @@ def _snap_ranges(ranges, fps: float) -> list[tuple[float, float]]:
 def _build_short(info: dict, *, feat: sc.Feat, ev, asset: Asset, params: ShortsParams, band: sc.Band,
                  fixer: _CutFixer, check_band: bool = True) -> Optional[_Short]:
     """Turn a scored window into V1 pieces (tighten, 2-second rule, zoom alternation); ``None`` when the exact length is
-    not allowed by the band."""
+    not allowed by the band.  ``info["ranges"]`` (a cut list) lists several source ranges played in that order -- a
+    cold open, skipped stumbles; every range is tightened on its own and every boundary between ranges is a real cut."""
     fps = float(params.fps)
-    t0, t1 = float(info["t0"]), float(info["t1"])
-    t0 = fixer.fix_in(t0)
-    t1 = fixer.fix_out(t1)
-    t0, t1 = snap_time(t0, fps), snap_time(t1, fps)
-    if t1 - t0 < MIN_CLIP:
-        return None
+    ranges = info.get("ranges") or [(float(info["t0"]), float(info["t1"]))]
     removals: list[tuple[float, float]] = []
-    if params.tighten:
-        removals = sc.silence_removals(feat.sil.tolist(), t0, t1, float(params.pause_min), float(params.pause_keep),
-                                       feat.words)
-    kept = _snap_ranges(sc.tighten_ranges(t0, t1, removals, MIN_CLIP), fps)
-    if not kept:
+    pieces: list[_P] = []
+    for r0, r1 in ranges:
+        t0 = fixer.fix_in(float(r0))
+        t1 = fixer.fix_out(float(r1))
+        t0, t1 = snap_time(t0, fps), snap_time(t1, fps)
+        if t1 - t0 < MIN_CLIP:
+            continue
+        rem: list[tuple[float, float]] = []
+        if params.tighten:
+            rem = sc.silence_removals(feat.sil.tolist(), t0, t1, float(params.pause_min), float(params.pause_keep),
+                                      feat.words)
+        removals.extend(rem)
+        kept = _snap_ranges(sc.tighten_ranges(t0, t1, rem, MIN_CLIP), fps)
+        # interior edges that sit on a scene cut
+        fixed: list[tuple[float, float]] = []
+        for i, (a, b) in enumerate(kept):
+            if i > 0:
+                a = fixer.fix_in(a)
+            if i < len(kept) - 1:
+                b = fixer.fix_out(b)
+            if b - a >= 0.1:
+                fixed.append((snap_time(a, fps), snap_time(b, fps)))
+        pieces.extend(_P(a, b) for a, b in fixed if b > a)
+    if not pieces:
         return None
-    # interior edges that sit on a scene cut
-    fixed: list[tuple[float, float]] = []
-    for i, (a, b) in enumerate(kept):
-        if i > 0:
-            a = fixer.fix_in(a)
-        if i < len(kept) - 1:
-            b = fixer.fix_out(b)
-        if b - a >= 0.1:
-            fixed.append((snap_time(a, fps), snap_time(b, fps)))
-    kept = [(a, b) for a, b in fixed if b > a]
-    if not kept:
-        return None
-    pieces = [_P(a, b) for a, b in kept]
     # the 2-second rule: a first clip longer than first_cut_max is split with a punch-in on its second half
     first_cut_src: Optional[float] = None
     if params.reframe != "blur":
@@ -360,14 +363,32 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     weights.update({k: float(v) for k, v in (getattr(params, "weights", None) or {}).items() if k in weights})
     _check(cancel)
 
-    # ---------------------------------------------------------------- 3. windows
+    # ---------------------------------------------------------------- 3. windows (or the person's cut list)
     rep(0.82, "搜尋最佳片段…")
     fixer = _CutFixer(ev, asset, fps, enabled=bool(ev.scenes))
     pool: Optional[sc.Pool] = None
     infos: list[dict] = []
     shorts: list[_Short] = []
     whole = dur < band.lo
-    if whole:
+    cutl = None
+    if params.cutlist_file:
+        cutl = cl.load_cutlist(params.cutlist_file)
+        cl.check_against(cutl, dur)
+        notes.append(f"依剪輯清單「{cutl.name}」剪出 {len(cutl.shorts)} 支（不做自動搜尋；「支數」設定不適用）。")
+        for i, item in enumerate(cutl.shorts, 1):
+            _check(cancel)
+            rngs = [(a, min(b, dur)) for a, b in item.ranges]
+            info = {"t0": min(a for a, _b in rngs), "t1": max(b for _a, b in rngs), "ranges": rngs, "score": 0.0,
+                    "parts": {}, "stats": {}, "start_kind": "cutlist", "end_kind": "cutlist", "mid_word": False,
+                    "cutlist": True, "title": item.title, "note": item.note,
+                    "cards": [(c.text, c.at, c.duration, c.source) for c in item.cards]}
+            sh = _build_short(info, feat=feat, ev=ev, asset=asset, params=params, band=band, fixer=fixer,
+                              check_band=False)
+            if sh is None:
+                raise AutoEditError(f"剪輯清單第 {i} 支「{item.title or '未命名'}」的片段都太短（每段至少 {MIN_CLIP:g} 秒），無法剪出。")
+            shorts.append(sh)
+            rep(0.82 + 0.1 * i / len(cutl.shorts), f"依剪輯清單剪第 {i} 支…")
+    elif whole:
         notes.append(f"素材只有 {dur:.0f} 秒，短於 {band.label} 長度帶下限 {band.lo:g} 秒，只產生 1 支（整段）短影音。")
         info = {"t0": 0.0, "t1": dur, "tight": dur, "saved": 0.0, "score": 0.0, "parts": {}, "stats": {},
                 "start_kind": "edge", "end_kind": "edge", "mid_word": False}
@@ -422,10 +443,14 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         _check(cancel)
         rep(0.92 + 0.07 * (rank - 1) / max(len(shorts), 1), f"整理第 {rank} 支短影音…")
         info = sh.info
-        t_first, t_last = sh.pieces[0].a, sh.pieces[-1].b
+        from_list = bool(info.get("cutlist"))
+        # a cut list may play a later moment first (cold open): the source span is min..max, not first..last
+        t_first, t_last = min(p.a for p in sh.pieces), max(p.b for p in sh.pieces)
+        best = _best_in_pieces(feat, sh.pieces, 3)
         name = f"短影音 {rank}｜{_mmss(t_first)}–{_mmss(t_last)}"
-        best = feat.content.best_in(t_first, t_last, 1) if len(feat.content) else []
-        if best:
+        if from_list and info.get("title"):
+            name = f"短影音 {rank}｜{info['title']}"
+        elif best:
             name += f"｜{hl.quote(best[0].text, 12)}"
         seq = Sequence.create(name, int(params.width), int(params.height), fps, video_tracks=2, audio_tracks=2,
                               seq_id=ids("s"))
@@ -454,7 +479,9 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
             nxt_seam = i + 1 < len(sh.pieces) and sh.pieces[i + 1].seam
             note = ""
             if i == 0:
-                note = "自動剪輯：" + _why(info, sh, band, feat, music is not None)
+                note = "自動剪輯：" + (_cutlist_why(info, sh, feat) if from_list else _why(info, sh, band, feat, music is not None))
+            elif from_list and not p.seam:
+                note = "剪輯清單的下一段（跳接）" + (f"，取景 {p.zoom:g} 倍" if p.zoom > 1.0 else "") + "。"
             elif p.seam:
                 note = f"第一個視覺剪點（{p.start:.1f} 秒）：同一段連續素材，後半 punch-in {p.zoom:g} 倍。"
             else:
@@ -469,6 +496,21 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         if params.captions != "off" and cap_segments:
             cues = cues_for_pieces(cap_segments, [Piece(asset.id, p.a, p.b, p.start, 1.0) for p in sh.pieces],
                                    max_chars=style.max_chars, ids=ids, rules=rules, fps=fps)
+        for text, at, dur_c, src in info.get("cards", []):                 # 字卡 (title cards) from the cut list
+            if src is not None:                         # pinned to a source moment: where that moment plays (first time)
+                hit = next((p for p in sh.pieces if p.a - 1e-6 <= src < p.b), None)
+                if hit is None:
+                    notes.append(f"「{name}」的字卡「{text}」指定在來源 {_mmss(src)} 出現，但剪出的片段沒有包含這個時間，已略過。")
+                    continue
+                at = hit.start + (src - hit.a)
+            if at > total_len - 0.5:
+                notes.append(f"「{name}」的字卡「{text}」設定在第 {at:g} 秒出現，但這支只有 {total_len:.1f} 秒，已略過。")
+                continue
+            c0 = snap_time(max(at, 0.0), fps)
+            c1 = snap_time(min(c0 + dur_c, total_len), fps)
+            if c1 - c0 >= 0.1:
+                cues.append(CaptionCue(id=ids("q"), start=round(c0, 6), end=round(c1, 6), text=text,
+                                       style={"kind": "card"}))
         seq.cues = cues
         n_cues_total += len(cues)
         # ---- music
@@ -514,10 +556,11 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         decisions.append({
             "id": ids("d"), "kind": "short", "sequence": sid, "score": _f(score),
             "source": {"asset_id": asset.id, "t0": _f(t_first), "t1": _f(t_last)},
-            "summary": summary, "why": _why(info, sh, band, feat, music is not None),
+            "summary": (f"{info.get('title') or '剪輯清單'} · {total_len:.0f} 秒 · {len(info.get('ranges', []))} 段"
+                        if from_list else summary),
+            "why": _cutlist_why(info, sh, feat) if from_list else _why(info, sh, band, feat, music is not None),
             "highlights": [{"t0": _f(u.start), "t1": _f(u.end), "text": u.text, "score": _f(u.score),
-                            "tags": list(u.tags[:3])} for u in (feat.content.best_in(t_first, t_last, 3)
-                                                                if len(feat.content) else [])],
+                            "tags": list(u.tags[:3])} for u in best],
             "evidence": {"parts": {k: _f(v) for k, v in info.get("parts", {}).items()},
                          "weights": {k: _f(v) for k, v in (pool.weights if pool is not None else {}).items()},
                          "start_kind": info.get("start_kind", ""), "end_kind": info.get("end_kind", ""),
@@ -526,7 +569,17 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
                          "first_cut": None if sh.first_cut is None else _f(sh.first_cut)},
         })
         # tighten
-        if params.tighten:
+        if from_list:
+            removed = sum(b - a for a, b in sh.removals)
+            decisions.append({
+                "id": ids("d"), "kind": "tighten", "sequence": sid,
+                "summary": f"依剪輯清單接成 {len(sh.pieces)} 個片段" + (f"，另剪掉 {removed:.1f} 秒長停頓" if removed > 0 else ""),
+                "why": "片段依剪輯清單列出的順序播放（可以把後面的句子放到最前面當開場、跳過口誤）"
+                       + ("；每段內長度 ≥ {:g} 秒的停頓只保留 {:g} 秒。".format(params.pause_min, params.pause_keep)
+                          if params.tighten else "；段內不剪停頓。"),
+                "evidence": {"ranges": [[_f(a), _f(b)] for a, b in info.get("ranges", [])],
+                             "cuts": [[_f(a), _f(b)] for a, b in sh.removals], "saved": _f(removed)}})
+        elif params.tighten:
             n_cut = max(0, sum(1 for p in sh.pieces if not p.seam) - 1)
             cut_total = 0.0
             for i in range(1, len(sh.pieces)):
@@ -588,6 +641,8 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         "transcript": tinfo, "highlight_engine": judge_info,
         "weights_used": {k: _f(v) for k, v in (pool.weights if pool is not None else {}).items()},
         "params": params.to_dict(),
+        "cutlist": None if cutl is None else {"name": cutl.name, "sha256": cutl.sha256, "shorts": len(cutl.shorts),
+                                              "source": cutl.source},
     }
     sources = [{"asset_id": asset.id, "name": asset.name, "fingerprint": asset.fingerprint,
                 "duration": _f(asset.duration), "evidence_sha256": ev.sha256()}]
@@ -595,6 +650,37 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     rep(1.0, "完成")
     return EditPlan(kind="shorts", brief=brief, sources=sources, assets=plan_assets, sequences=sequences,
                     decisions=decisions, notes=_dedupe(notes))
+
+
+# ------------------------------------------------------------------------------------ cut lists
+def _best_in_pieces(feat: sc.Feat, pieces: list, k: int) -> list:
+    """The ``k`` best sentence units whose middle lies inside any of the pieces (a cut list can skip whole stretches)."""
+    if not len(feat.content):
+        return []
+    seen, out = set(), []
+    for u in feat.content.units:
+        mid = (u.start + u.end) / 2.0
+        if u.score > 0 and id(u) not in seen and any(p.a <= mid < p.b for p in pieces):
+            seen.add(id(u))
+            out.append(u)
+    out.sort(key=lambda u: (-u.score, u.start))
+    return out[:k]
+
+
+def _cutlist_why(info: dict, sh: _Short, feat: sc.Feat) -> str:
+    ranges = info.get("ranges", [])
+    bits = [f"依剪輯清單：「{info.get('title') or '未命名'}」"]
+    if info.get("note"):
+        bits.append(str(info["note"]))
+    cold = len(ranges) > 1 and ranges[0][0] > ranges[1][0]
+    bits.append(f"{len(ranges)} 段素材依清單順序接起來" + ("，第 1 段取自後面的內容當開場（冷開場）" if cold else ""))
+    if info.get("cards"):
+        bits.append("字卡：" + "／".join(c[0] for c in info["cards"]))
+    best = _best_in_pieces(feat, sh.pieces, 2)
+    if best:
+        bits.append("爆點句：" + "；".join(f"「{hl.quote(u.text)}」" for u in best))
+    bits.append(f"長度 {sh.length:.1f} 秒")
+    return "；".join(bits) + "。"
 
 
 # ------------------------------------------------------------------------------------ highlight judge

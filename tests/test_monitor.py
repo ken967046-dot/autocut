@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+import os
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -778,10 +780,25 @@ def test_active_cue_lines_wrap_like_the_renderer():
     seq.caption_style.max_chars = 6
     from autocut.core.project import CaptionCue
     seq.cues = [CaptionCue("q1", 0.0, 1.0, "一二三四五六七八九十"), CaptionCue("q2", 2.0, 3.0, "後面的字幕")]
-    assert active_cue_lines(seq, 0.5) == [["一二三四五六", "七八九十"]]
+    assert active_cue_lines(seq, 0.5) == [["一二三四五", "六七八九十"]]          # two balanced lines
     assert active_cue_lines(seq, 1.5) == []
     assert active_cue_lines(seq, 2.0) == [["後面的字幕"]]
     assert active_cue_lines(seq, 1.0) == []                    # the end time is exclusive
+
+
+def test_active_cue_lines_keep_title_cards_on_their_own_layer():
+    from autocut.core.project import CaptionCue, card_style
+    p = Project.new("c")
+    seq = p.sequences[0]
+    seq.cues = [CaptionCue("q1", 0.0, 3.0, "字幕"),
+                CaptionCue("k1", 1.0, 2.0, "一二三四五六七八九十一二三四五六", {"kind": "card"})]
+    assert active_cue_lines(seq, 1.5) == [["字幕"]]
+    from autocut.render.ass import wrap_text, wrap_units                     # cards wrap with their own width
+    width = wrap_units(card_style(seq.caption_style), seq.width, seq.height)
+    assert width == card_style(seq.caption_style).max_chars == 14
+    assert active_cue_lines(seq, 1.5, cards=True) == [wrap_text("一二三四五六七八九十一二三四五六", width).split("\\N")]
+    assert active_cue_lines(seq, 1.5, cards=True) == [["一二三四五六七八", "九十一二三四五六"]]
+    assert active_cue_lines(seq, 2.5, cards=True) == []
 
 
 @pytest.mark.ffmpeg
@@ -804,6 +821,36 @@ def test_caption_overlay_is_drawn_and_can_be_hidden(qapp, made, real_proj):
     after = mon.view.grab().toImage()
     mon.btn_caps.click()
     assert mon.view.grab().toImage() == after
+
+
+@pytest.mark.ffmpeg
+def test_title_card_is_previewed_at_the_top_in_its_box(qapp, made, real_proj):
+    st, cid = build(real_proj, seconds=3.0, size=(1080, 1920))
+    st.op("字幕", "add_cue", 0.0, 2.0, "這是測試字幕")
+    mon, _pb = made(st)
+    assert mon.wait_idle()
+    plain = mon.view.grab().toImage()
+    st.op("字卡", "add_cue", 0.0, 2.0, "立恩（Ken桑的前輩）", card=True)
+    mon.view.update()
+    qapp.processEvents()
+    with_card = mon.view.grab().toImage()
+    os.makedirs("screenshots", exist_ok=True)
+    with_card.save("screenshots/monitor_title_card.png")
+    pic = mon.view.picture_rect().toRect()
+    top = (pic.left() + 4, pic.top() + 4, pic.width() - 8, pic.height() // 4)
+    low = (pic.left() + 4, pic.top() + pic.height() // 2, pic.width() - 8, pic.height() // 2 - 4)
+    assert with_card.copy(*top) != plain.copy(*top)                    # the card is drawn in the top quarter...
+    assert with_card.copy(*low) == plain.copy(*low)                    # ...and the subtitle below is unchanged
+    img, ref = with_card.copy(*top), plain.copy(*top)
+    dark = yellow = 0
+    for y in range(0, img.height(), 2):
+        for x in range(0, img.width(), 2):
+            c, o = img.pixelColor(x, y), ref.pixelColor(x, y)
+            if c == o:
+                continue
+            dark += max(c.red(), c.green(), c.blue()) < 30                        # the black box...
+            yellow += c.red() > 200 and c.green() > 170 and c.blue() < 120 and o.blue() > 200   # ...yellow text on blue
+    assert dark > 300 and yellow > 20, (dark, yellow)
 
 
 @pytest.mark.ffmpeg

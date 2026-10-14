@@ -421,6 +421,9 @@ def tighten_ranges(t0: float, t1: float, removals: Sequence[tuple[float, float]]
     return [(a, b) for a, b in kept if b - a > 1e-9]
 
 
+SECOND_HALF_MIN = 0.6                 # the punched-in rest of a split first clip, when the clip allows it
+
+
 def first_cut_time(feat: Feat, a: float, b: float, first_cut_max: float, words: Sequence[tuple[float, float]] = ()
                    ) -> Optional[float]:
     """Source time (inside the first clip ``a..b``) where the 2-second rule splits it, at most 1.9 s after ``a``, at a
@@ -432,6 +435,8 @@ def first_cut_time(feat: Feat, a: float, b: float, first_cut_max: float, words: 
     lo = min(a + min(1.0, limit * 0.55), hi - 0.1)
     if hi < a + 0.5 or hi <= lo:
         return None
+    if min(hi, b - SECOND_HALF_MIN) > lo:                           # ...and preferably not a split-second zoom flash
+        hi = min(hi, b - SECOND_HALF_MIN)
     cand = [t for t in np.arange(lo, hi + 1e-9, 0.05)]
     if words:
         gaps = [we for _ws, we in words if lo - 1e-9 <= we <= hi + 1e-9]       # between two words

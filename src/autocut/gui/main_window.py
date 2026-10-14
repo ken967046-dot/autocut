@@ -1224,8 +1224,9 @@ class MainWindow(QMainWindow):
             return False
         seq = self.state.sequence()
         text = f"要把「{os.path.basename(path)}」的 {len(cues)} 句字幕放進序列「{seq.name}」嗎？"
-        if seq.cues:
-            text += f"\n這會取代目前序列裡的 {len(seq.cues)} 句字幕（可以用 Ctrl+Z 復原）。"
+        n_subs = sum(1 for q in seq.cues if not q.is_card)
+        if n_subs:
+            text += f"\n這會取代目前序列裡的 {n_subs} 句字幕（字卡會保留；可以用 Ctrl+Z 復原）。"
         if len(paths) > 1:
             text += f"\n（一次只能套用一個字幕檔，另外 {len(paths) - 1} 個已略過。）"
         if not ask(self, "匯入字幕", text, "套用字幕"):

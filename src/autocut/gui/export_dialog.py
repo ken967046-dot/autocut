@@ -317,14 +317,17 @@ class ExportDialog(QDialog):
         self.hw_info.setObjectName("dim")
 
         has_cues = any(q.text.strip() for q in seq.cues)
-        self.chk_burn = QCheckBox("把字幕燒進畫面")
+        has_subs = any(q.text.strip() for q in seq.cues if not q.is_card)
+        has_cards = any(q.text.strip() for q in seq.cues if q.is_card)
+        self.chk_burn = QCheckBox("把字幕與字卡燒進畫面" if has_cards else "把字幕燒進畫面")
         self.chk_srt = QCheckBox("另存字幕檔（.srt，放在影片旁邊）")
-        for box in (self.chk_burn, self.chk_srt):
-            box.setEnabled(has_cues)
+        self.chk_burn.setEnabled(has_cues)
+        self.chk_srt.setEnabled(has_subs)
         self.chk_burn.setChecked(has_cues)
         if not has_cues:
             self.chk_burn.setToolTip("這個序列沒有字幕")
-            self.chk_srt.setToolTip("這個序列沒有字幕")
+        if not has_subs:
+            self.chk_srt.setToolTip("這個序列沒有字幕" + ("（字卡不會寫進 .srt）" if has_cards else ""))
         self.chk_loud = QCheckBox()
         self._has_sound = has_sound(self.state.project, seq)
         if not self._has_sound:

@@ -24,6 +24,9 @@
 | LONG-1 | 長片精華：重點＋去水詞＋講者特寫（`autocut longform`、「長片精華…」對話框） | claude | review | `tests/test_longform.py`（選句／鋪陳／銜接、水詞與疊字、特寫觸發 3 秒、換人先全景、長段切回全景、爆點句推近、一人或兩人同時講不放大、審核→套用→一次復原；**真的 ffmpeg 渲染後量測特寫面積 ≈ 倍率²**；講者偵測用合成畫面＋替身人臉偵測器）、`tests/test_longform_dialog.py`（真引擎跑對話框、截圖已檢視）；**真實雙人訪談未驗證**（→ CODEX-3）|
 | REVIEW-3 | Codex 審查 HL-1／SUBS-1／LONG-1（唯讀、只看改動的檔案，省額度） | codex | done | **真正由 Codex 執行**（雲端環境開放 OpenAI 網域後，用使用者的 ChatGPT 方案以裝置碼登入）：第一輪 changes-requested（6 major、1 minor），全部重現、補測試、修正；複查兩輪後 **approve**。見下方審查紀錄 |
 | CODEX-2 | 用真實影片＋字幕校準爆點詞庫 | claude + codex / user | doing | 第一輪（2026-10-14）：使用者第一支影片的字幕（9 分 16 秒、381 條無標點）＋**AI 評審共識**當暫代標註（**不是使用者的標註**）；見下方紀錄。等使用者標出自己心目中的爆點後再做第二輪 |
+| CUT-1 | 剪輯清單：照使用者決定的段落剪短影音（冷開場、跳過口誤、字卡；CLI `--cutlist`、對話框「剪輯清單」）| claude | review | `tests/test_cutlist.py`（時間格式、逐欄位繁中錯誤、超出長度、冷開場順序、字卡 at／source、略過說明、審核→套用→一次復原、存檔再讀、CLI 真 ffmpeg）、`tests/test_autoedit_dialog.py`（欄位驗證、支數／目標長度變灰、不記住檔案）；**這集的 6 支**用真字幕＋同長度合成影片端對端跑過（6 支都套用、輸出、技術檢查通過）；**真影片畫面未看過** |
+| CARD-1 | 字卡：渲染、預覽、時間軸、檢查器、匯出 | claude | review | `tests/test_render.py`（ASS 字卡樣式與圖層、分段快取只影響有字卡的段、字卡樣式算進簽章〔拿掉就失敗〕、**實際輸出量測**：上方 30% 有黃字與不透明黑框、底部字幕不變、.srt 沒有字卡）、`test_monitor.py`（預覽上方出現字卡、下方不變；截圖已檢視）、`test_timeline.py`（字卡帶、重疊時上下都點得到、拖曳一次復原；截圖已檢視）、`test_inspector.py`（字卡按鈕、匯出／匯入保留字卡；截圖已檢視）、`test_core.py`（op 規則、復原）、`test_export_dialog.py` |
+| WRAP-1 | 直式字幕超出畫面（**既有問題**，在這集輸出畫面上發現）＋平均分行 | claude | review | 9:16 每行 16 字、字高 5.2% 時頭尾的字被切掉 → `wrap_units` 以畫面寬度為上限、兩行平均分配、標點規則；`tests/test_render.py` 實際輸出量測字不碰邊（拿掉修正就失敗）；`RENDER_VERSION` 8 |
 | CODEX-3 | 真實雙人訪談驗證講者特寫並微調 | codex / user | todo | `Codex-Task.ps1 -Task CODEX-3` |
 | CODEX-4 | 講者分析在 1 小時影片上的速度 | codex | todo | `Codex-Task.ps1 -Task CODEX-4` |
 | CODEX-5 | 平滑推近（取代硬切特寫）——先提案 | codex | todo | 只寫提案，等同意 |

@@ -807,6 +807,9 @@ class CaptionsTab(QWidget):
         self.b_import = self._button("匯入…", "匯入 SRT / ASS / VTT 字幕檔", self._import, row2)
         self.b_export = self._button("匯出 SRT…", "把字幕存成 SRT 檔", self._export, row2)
         self.b_auto = self._button("自動產生字幕", "用語音辨識產生字幕（選用功能，全部在本機執行）", self._auto, row2)
+        self.b_card = self._button("字卡", "按下：把選取的字幕改成字卡（顯示在畫面上方的標題框，不會匯出到 SRT）；"
+                                   "再按一次改回字幕", self._toggle_card, row2)
+        self.b_card.setCheckable(True)
         box.addLayout(row1)
         box.addLayout(row2)
         return w
@@ -903,7 +906,7 @@ class CaptionsTab(QWidget):
     def refresh(self) -> None:
         seq = self._seq()
         cues = list(seq.cues) if seq else []
-        sig = (seq.id if seq else "", tuple((q.id, q.start, q.end, q.text) for q in cues))
+        sig = (seq.id if seq else "", tuple((q.id, q.start, q.end, q.text, q.is_card) for q in cues))
         if sig != self._sig:
             self._sig = sig
             self._fill_table(cues)
@@ -917,6 +920,8 @@ class CaptionsTab(QWidget):
         try:
             with quiet(self.table):
                 self.table.setRowCount(len(cues))
+                card_bg = QColor(theme.CLIP_CARD)
+                card_bg.setAlpha(90)
                 for r, q in enumerate(cues):
                     for col, text in enumerate((fmt_clock(q.start), fmt_clock(q.end), q.text)):
                         it = QTableWidgetItem(text)
@@ -924,6 +929,9 @@ class CaptionsTab(QWidget):
                             it.setData(Qt.UserRole, q.id)
                         if col < 2:
                             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        if q.is_card:
+                            it.setBackground(card_bg)
+                            it.setToolTip("字卡：顯示在畫面上方的標題框（不會匯出到 SRT）")
                         self.table.setItem(r, col, it)
                 self.table.resizeRowsToContents()
             self._sync_from_state()
@@ -955,6 +963,9 @@ class CaptionsTab(QWidget):
         self.b_split.setEnabled(bool(cue_ids))
         self.b_merge.setEnabled(n >= 2)
         self.b_delete.setEnabled(n >= 1)
+        chosen = [q for q in seq.cues if q.id in self.state.cue_selection] if seq else []
+        self.b_card.setEnabled(bool(chosen))
+        self.b_card.setChecked(bool(chosen) and all(q.is_card for q in chosen))
         self.b_shift.setEnabled(bool(cue_ids))
         self.b_export.setEnabled(bool(cue_ids))
         self.b_import.setEnabled(seq is not None and not busy)
@@ -1099,6 +1110,24 @@ class CaptionsTab(QWidget):
             return
         self._op("合併字幕", "merge_cues", ids)
 
+    def _toggle_card(self) -> None:
+        seq = self._seq()
+        ids = self.selected_ids()
+        if seq is None or not ids:
+            self.state.status.emit("請先選取要改成字卡的字幕")
+            self._update_buttons()
+            return
+        chosen = [q for q in seq.cues if q.id in set(ids)]
+        to_card = not all(q.is_card for q in chosen)
+        sid = seq.id
+        try:
+            self.state.do("設為字卡" if to_card else "改回字幕",
+                          lambda p: [ops.update_cue(p, p.sequence(sid), q.id, card=to_card) for q in chosen])
+        except OpError:
+            self._update_buttons()
+            return
+        self.state.status.emit(f"已把 {len(chosen)} 則改成{'字卡' if to_card else '字幕'}")
+
     def _delete(self) -> None:
         ids = self.selected_ids()
         if ids and self._op("刪除字幕", "remove_cues", ids):
@@ -1122,15 +1151,19 @@ class CaptionsTab(QWidget):
         if not items:
             inform(self, "匯入字幕", "這個檔案裡沒有可用的字幕。")
             return
-        if seq.cues and not ask(self, "匯入字幕", f"目前已有 {len(seq.cues)} 則字幕。\n"
-                                f"要用檔案中的 {len(items)} 則字幕取代嗎？", "取代", "取消"):
+        subs = [q for q in seq.cues if not q.is_card]
+        if subs and not ask(self, "匯入字幕", f"目前已有 {len(subs)} 則字幕。\n"
+                            f"要用檔案中的 {len(items)} 則字幕取代嗎？（字卡會保留）", "取代", "取消"):
             return
         if self._op("匯入字幕", "replace_cues", items) is not None:
             self.state.status.emit(f"已匯入 {len(items)} 則字幕：{os.path.basename(path)}")
 
     def _export(self) -> None:
         seq = self._seq()
-        if seq is None or not seq.cues:
+        subs = [q for q in seq.cues if not q.is_card] if seq is not None else []
+        if seq is None or not subs:
+            if seq is not None and seq.cues:
+                self.state.status.emit("這個序列只有字卡，沒有可匯出的字幕")
             return
         path = save_file(self, "匯出 SRT", f"{seq.name}.srt", "SRT 字幕 (*.srt)")
         if not path:
@@ -1138,11 +1171,11 @@ class CaptionsTab(QWidget):
         if not path.lower().endswith(".srt"):
             path += ".srt"
         try:
-            atomic_write_text(path, to_srt(seq.cues))
+            atomic_write_text(path, to_srt(subs))
         except OSError as exc:
             inform(self, "匯出 SRT", f"無法寫入檔案：{exc}", warning=True)
             return
-        self.state.status.emit(f"已匯出 {len(seq.cues)} 則字幕：{os.path.basename(path)}")
+        self.state.status.emit(f"已匯出 {len(subs)} 則字幕：{os.path.basename(path)}")
 
     # ---------------------------------------------------------------- 自動產生字幕
     def _auto(self) -> None:
@@ -1165,8 +1198,9 @@ class CaptionsTab(QWidget):
                 self.state.status.emit("已取消自動產生字幕")
                 return
             allow_download = True
-        if seq.cues and not ask(self, "自動產生字幕", f"目前已有 {len(seq.cues)} 則字幕，產生完成後會取代它們。\n要繼續嗎？",
-                                "繼續", "取消"):
+        n_subs = sum(1 for q in seq.cues if not q.is_card)
+        if n_subs and not ask(self, "自動產生字幕", f"目前已有 {n_subs} 則字幕，產生完成後會取代它們（字卡會保留）。\n要繼續嗎？",
+                              "繼續", "取消"):
             return
         self._start_auto(allow_download)
 
@@ -1318,7 +1352,9 @@ class SequenceTab(QWidget):
         self._fill_fps(seq.fps)
         self.f_bg.set_color(seq.background)
         clips = sum(len(t.clips) for t in seq.tracks())
-        self.info.setText(f"長度 {human_duration(seq.duration)}　·　{clips} 個片段　·　{len(seq.cues)} 則字幕\n"
+        n_cards = sum(1 for q in seq.cues if q.is_card)
+        self.info.setText(f"長度 {human_duration(seq.duration)}　·　{clips} 個片段　·　{len(seq.cues) - n_cards} 則字幕"
+                          + (f"　·　{n_cards} 張字卡" if n_cards else "") + "\n"
                           f"{len(seq.video_tracks)} 條視訊軌 / {len(seq.audio_tracks)} 條音訊軌　·　比例 {seq.aspect_label}")
 
     def _fill_fps(self, fps: float) -> None:

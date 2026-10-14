@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -381,3 +382,127 @@ def test_a_failing_attempt_does_not_look_like_a_cancel_by_the_person():
     other = _Either(user)
     user.set()
     assert other.is_set()                                   # ... but the person's cancel stops every attempt
+
+
+# ------------------------------------------------------------------------------------------- title cards (字卡)
+def test_ass_cards_are_their_own_style_and_layer():
+    from autocut.core.project import CaptionStyle, card_style
+    from autocut.render.ass import build_ass
+    st = CaptionStyle()
+    plain = build_ass([(0.0, 2.0, "字幕")], st, 1080, 1920)
+    assert "Style: Card" not in plain and plain.count("Dialogue:") == 1
+    both = build_ass([(0.0, 2.0, "字幕")], st, 1080, 1920, cards=[(0.5, 3.0, "立恩（Ken桑的前輩）")])
+    assert both.startswith(plain.split("\n[Events]")[0])                       # the subtitle style is unchanged
+    card_line = next(ln for ln in both.splitlines() if ln.startswith("Style: Card,"))
+    f = card_line.split(",")
+    assert f[3] == "&H004DE1FF" and f[6] == "&H00000000" and f[15] == "3" and f[18] == "8"   # yellow on opaque black, top
+    assert int(f[2]) > int(next(ln for ln in both.splitlines() if ln.startswith("Style: Default,")).split(",")[2])
+    assert "Dialogue: 1,0:00:00.50,0:00:03.00,Card,,0,0,0,,立恩（Ken桑的前輩）" in both   # the closing mark hangs
+    assert card_style(CaptionStyle(position="top")).position == "center"       # never on top of top subtitles
+    # a segment window clips the card like a subtitle
+    seg = build_ass([], st, 1080, 1920, t0=2.0, t1=4.0, cards=[(0.5, 3.0, "卡")])
+    assert "Dialogue: 1,0:00:00.00,0:00:01.00,Card" in seg
+
+
+def test_compile_keeps_cards_out_of_the_srt_and_out_of_other_segments_signatures(mp):
+    from autocut.render.compiler import EncodeSettings, segment_signature
+    p, a = mp
+    seq = p.active_sequence()
+    set_fmt(seq, 360, 640)
+    ops.place_clip(p, seq, a["port"].id, seq.video_tracks[0].id, start=0, src_out=5)
+    ops.add_cue(p, seq, 0.5, 2.0, "subtitle")
+    enc = EncodeSettings()
+    before = compile_sequence(p, seq, max_segment_seconds=1.0)
+    sig0 = [segment_signature(before, s, enc) for s in before.segments]
+    ops.add_cue(p, seq, 3.2, 3.8, "CARD", card=True)
+    comp = compile_sequence(p, seq, max_segment_seconds=1.0)
+    assert comp.cues == [(0.5, 2.0, "subtitle")] and comp.cards == [(3.2, 3.8, "CARD")]
+    sig1 = [segment_signature(comp, s, enc) for s in comp.segments]
+    changed = [i for i, (x, y) in enumerate(zip(sig0, sig1)) if x != y]
+    assert changed == [i for i, s in enumerate(comp.segments) if s.cards] == [3]   # only the segment with the card
+    # the card look is part of the cache key (it is derived in code, not stored in the project)
+    import autocut.render.compiler as compiler_mod
+    from autocut.core.project import card_style as real_card_style
+    other = lambda st: replace(real_card_style(st), color="#FF0000")          # noqa: E731
+    mp_sig = segment_signature(comp, comp.segments[3], enc)
+    compiler_mod.card_style, saved = other, compiler_mod.card_style
+    try:
+        assert segment_signature(comp, comp.segments[3], enc) != mp_sig
+        assert segment_signature(comp, comp.segments[0], enc) == sig1[0]
+    finally:
+        compiler_mod.card_style = saved
+
+
+def _yellow(img) -> np.ndarray:
+    b, g, r = (img[..., k].astype(int) for k in range(3))
+    return (r > 170) & (g > 150) & (b < 120)
+
+
+def test_render_card_burned_at_the_top_and_not_in_the_srt(mp, tmp_path):
+    p, a = mp
+    seq = p.active_sequence()
+    set_fmt(seq, 360, 640)
+    ops.place_clip(p, seq, a["port"].id, seq.video_tracks[0].id, start=0, src_out=4)   # solid blue 9:16
+    seq.caption_style.font = "DejaVu Sans"
+    ops.add_cue(p, seq, 0.0, 4.0, "SUBTITLE LINE")
+    plain = tmp_path / "plain.mp4"
+    res = render_sequence(p, seq, plain, RenderSettings(preset="draft_fast", normalize=False))
+    if any("libass" in w for w in res.warnings):
+        pytest.skip("this ffmpeg has no libass")
+    ops.add_cue(p, seq, 1.0, 3.0, "BIG CARD", card=True)
+    out = tmp_path / "card.mp4"
+    render_sequence(p, seq, out, RenderSettings(preset="draft_fast", normalize=False, write_srt=True))
+    h = 640
+    f_plain, f_card, f_before = frame_at(plain, 2.0), frame_at(out, 2.0), frame_at(out, 0.5)
+    top = slice(0, int(0.3 * h))
+    yel = _yellow(f_card)
+    assert yel[top].sum() > 150 and not _yellow(f_plain).any() and not _yellow(f_before).any()
+    ys = np.nonzero(yel)[0]
+    assert ys.max() < 0.3 * h                                                    # the card sits near the top...
+    dark = (f_card[top].max(axis=2) < 40)
+    assert dark.sum() > 2000 and not (f_plain[top].max(axis=2) < 40).any()     # ...in an opaque black box
+    # the subtitle at the bottom is drawn the same with or without the card
+    bottom = slice(int(0.7 * h), h)
+    assert np.abs(f_card[bottom].astype(int) - f_plain[bottom].astype(int)).mean() < 1.0
+    srt = out.with_suffix(".srt").read_text(encoding="utf-8")
+    assert "SUBTITLE LINE" in srt and "BIG CARD" not in srt
+
+
+
+def test_wrap_fits_the_frame_and_keeps_punctuation_with_its_text():
+    from autocut.core.project import CaptionStyle, card_style
+    from autocut.render.ass import wrap_text, wrap_units
+    shorts = CaptionStyle(size=0.052, bold=True, outline=0.008, position="bottom", margin=0.20, max_chars=16)
+    assert wrap_units(shorts, 1920, 1080) == 16                                  # 16:9: the style's own width
+    assert wrap_units(shorts, 1080, 1920) == 9 == wrap_units(shorts, 720, 1280)  # 9:16: what fits across
+    assert wrap_units(card_style(shorts), 1080, 1920) == 7
+    assert wrap_units(CaptionStyle(size=0.5), 320, 180) >= 2
+    assert wrap_text("很多時候就是在一個很模糊的地帶", 9) == "很多時候就是在\\N一個很模糊的地帶"   # balanced
+    assert wrap_text("你看每天打開電視新聞", 9) == "你看每天打\\N開電視新聞"                # no 1-character line
+    assert wrap_text("立恩（Ken桑的前輩）", 7) == "立恩\\N（Ken桑的前輩）"                 # the bracket stays whole
+    assert wrap_text("Hello, world! This is fine", 9) == "Hello, world!\\NThis is fine"    # never inside a word
+    assert wrap_text("立恩（Ken桑的前輩）", 9) == "立恩（Ken桑的前輩）"                 # 「）」 never starts a line
+    assert wrap_text("一二三四五（六七八", 5) == "一二三四五\\N（六七八"                # 「（」 never ends one
+
+
+def test_render_long_portrait_subtitle_stays_inside_the_frame(mp, tmp_path):
+    """A 15-character subtitle on 9:16 used to run off both edges (16 characters per line at 5.2 % of the height is
+    ~1600 px on a 1080 px frame); now it wraps to two lines inside the side margins."""
+    p, a = mp
+    seq = p.active_sequence()
+    set_fmt(seq, 360, 640)
+    ops.place_clip(p, seq, a["port"].id, seq.video_tracks[0].id, start=0, src_out=2)   # solid blue 9:16
+    ops.set_caption_style(p, seq, size=0.052, bold=True, outline=0.008, position="bottom", margin=0.20, max_chars=16,
+                          font="Noto Sans CJK TC")
+    ops.add_cue(p, seq, 0.0, 2.0, "很多時候就是在一個很模糊的地帶")
+    out = tmp_path / "long.mp4"
+    res = render_sequence(p, seq, out, RenderSettings(preset="draft_fast", normalize=False))
+    if any("libass" in w for w in res.warnings):
+        pytest.skip("this ffmpeg has no libass")
+    f = frame_at(out, 1.0).astype(int)
+    text = (f.min(axis=2) > 170)                                                  # white glyphs (not the blue picture)
+    rows, cols = np.nonzero(text)
+    assert len(rows) > 300
+    assert cols.min() > 360 * 0.03 and cols.max() < 360 * 0.97                   # nothing touches the edges
+    bands = np.nonzero(np.diff(np.unique(rows)) > 3)[0]
+    assert len(bands) >= 1                                                        # two separate lines of text

@@ -87,6 +87,7 @@ BAR_H = 26
 VBAR_W = 12
 LANE_GAP = 2
 H_CAPTION, H_VIDEO, H_AUDIO = 28, 62, 48
+H_CAPTION_CARDS = 46            # the caption lane when the sequence has title cards (字卡): a card band above the subtitles
 CLIP_INSET = 2
 EDGE_PX = 8              # trim / resize zone
 SNAP_PX = 8              # snapping threshold
@@ -198,6 +199,7 @@ class _Palette:
         self.text, self.dim, self.accent = _qc(theme.TEXT), _qc(theme.TEXT_DIM), _qc(theme.ACCENT)
         self.video, self.audio, self.image = _qc(theme.CLIP_VIDEO), _qc(theme.CLIP_AUDIO), _qc(theme.CLIP_IMAGE)
         self.caption, self.disabled = _qc(theme.CLIP_CAPTION), _qc(theme.CLIP_DISABLED)
+        self.card = _qc(theme.CLIP_CARD)
         self.selected, self.playhead = _qc(theme.CLIP_SELECTED), _qc(theme.PLAYHEAD)
         self.marker, self.snap, self.error = _qc(theme.MARKER), _qc(theme.SNAP_LINE), _qc(theme.ERROR)
         self.range_fill = _qc(theme.ACCENT, 0x55)           # theme.RANGE_FILL is RRGGBBAA, Qt reads AARRGGBB
@@ -758,14 +760,16 @@ class _Painter:
             if q.start > t_hi:
                 break
             x0 = tl.time_to_x(q.start)
-            r = QRectF(x0, top, max(2.0, (q.end - q.start) * tl.pps), h)
+            y0, bh = tl.cue_band(lane, q)
+            r = QRectF(x0, y0, max(2.0, (q.end - q.start) * tl.pps), bh)
             p.setOpacity(0.4 if q.id in ov.dim else 1.0)
             p.setPen(Qt.NoPen)
-            p.setBrush(self.pal.caption)
+            p.setBrush(self.pal.card if q.is_card else self.pal.caption)
             p.drawRoundedRect(r, 3, 3)
             if r.width() > 12:
                 left = max(r.left(), area.left()) + 4
-                text = self.elide(self.fm_label, q.text.replace("\n", " "), min(r.right(), area.right()) - left - 3)
+                label = ("字卡｜" if q.is_card else "") + q.text.replace("\n", " ")
+                text = self.elide(self.fm_label, label, min(r.right(), area.right()) - left - 3)
                 p.setPen(QColor(24, 26, 30))
                 p.drawText(QRectF(left, r.top(), r.right() - left, r.height()), Qt.AlignLeft | Qt.AlignVCenter, text)
             p.setBrush(Qt.NoBrush)
@@ -1308,11 +1312,11 @@ class CueGesture(_Gesture):
     def dt(self, pos: QPointF) -> float:
         return (pos.x() - self.start.x()) / self.tl.pps
 
-    def ghost(self, start: float, end: float) -> QRectF:
+    def ghost(self, start: float, end: float, cue_id: Optional[str] = None) -> QRectF:
         tl = self.tl
         lane = tl._lane_by_id[CAPTION_LANE]
-        return QRectF(tl.time_to_x(start), tl._lane_top(lane) + CLIP_INSET, max(2.0, (end - start) * tl.pps),
-                      lane.h - 2 * CLIP_INSET)
+        y0, h = tl.cue_band(lane, tl._cue_index[cue_id or self.cue_id])
+        return QRectF(tl.time_to_x(start), y0, max(2.0, (end - start) * tl.pps), h)
 
 
 class CueMoveGesture(CueGesture):
@@ -1339,7 +1343,7 @@ class CueMoveGesture(CueGesture):
         if not self.crossed(pos):
             return
         delta, guide = self._delta(pos, mods)
-        ghosts = [(self.ghost(s + delta, e + delta), "cue") for s, e in self.orig.values()]
+        ghosts = [(self.ghost(s + delta, e + delta, i), "cue") for i, (s, e) in self.orig.items()]
         first = min(s for s, _ in self.orig.values()) + delta
         self.tl._set_overlay(Overlay(ghosts=ghosts, snap_t=guide, dim=set(self.ids),
                                      tip=(pos, f"{fmt_timecode(first, self.fps)}　{delta:+.2f}s")))
@@ -1628,7 +1632,7 @@ class TimelineWidget(QWidget):
         lanes: list[Lane] = []
         y = 0
         if seq is not None:
-            rows = [("caption", None, H_CAPTION)]
+            rows = [("caption", None, H_CAPTION_CARDS if any(q.is_card for q in seq.cues) else H_CAPTION)]
             rows += [("video", t, H_VIDEO) for t in reversed(seq.video_tracks)]
             rows += [("audio", t, H_AUDIO) for t in seq.audio_tracks]
             for i, (kind, tr, h) in enumerate(rows):
@@ -1639,6 +1643,7 @@ class TimelineWidget(QWidget):
         self._lane_by_id = {ln.id: ln for ln in lanes}
         self._clip_index = {c.id: (ln, c) for ln in lanes if ln.track is not None for c in ln.track.clips}
         self._cue_index = {q.id: q for q in seq.cues} if seq is not None else {}
+        self._has_cards = any(q.is_card for q in self._cue_index.values())
         end = seq.duration if seq is not None else 0.0
         if seq is not None and seq.cues:
             end = max(end, max(q.end for q in seq.cues))
@@ -1712,11 +1717,22 @@ class TimelineWidget(QWidget):
         x0, x1 = clamp_px(self.time_to_x(c.start)), clamp_px(self.time_to_x(c.end))
         return QRect(x0, round(self._lane_top(lane)) + CLIP_INSET, max(1, x1 - x0), lane.h - 2 * CLIP_INSET)
 
+    def cue_band(self, lane: Lane, q: CaptionCue) -> tuple[float, float]:
+        """``(top, height)`` of a caption block in the caption lane.  When the sequence has title cards (字卡), cards
+        take the upper part of the lane and subtitles the lower part, so both stay visible and clickable where they
+        overlap in time."""
+        top, h = round(self._lane_top(lane)) + CLIP_INSET, lane.h - 2 * CLIP_INSET
+        if not getattr(self, "_has_cards", False):
+            return top, h
+        hc = int(h * 0.42)
+        return (top, hc - 1) if q.is_card else (top + hc, h - hc)
+
     def cue_rect(self, cue_id: str) -> QRect:
         q = self._cue_index[cue_id]
         lane = self._lane_by_id[CAPTION_LANE]
         x0, x1 = clamp_px(self.time_to_x(q.start)), clamp_px(self.time_to_x(q.end))
-        return QRect(x0, round(self._lane_top(lane)) + CLIP_INSET, max(1, x1 - x0), lane.h - 2 * CLIP_INSET)
+        y0, h = self.cue_band(lane, q)
+        return QRect(x0, int(y0), max(1, x1 - x0), max(1, int(h)))
 
     def fade_handle_rect(self, clip_id: str, which: str) -> QRect:
         """Hit rectangle of a fade handle (``which``: ``"in"`` / ``"out"``) in widget coordinates."""
@@ -1892,6 +1908,11 @@ class TimelineWidget(QWidget):
             x0, x1 = self.time_to_x(q.start), self.time_to_x(q.end)
             if not (x0 <= x <= x1):
                 continue
+            if self._has_cards:                                  # cards and subtitles sit in their own halves
+                y0, bh = self.cue_band(lane, q)
+                lo, hi = (y0 - CLIP_INSET, y0 + bh + 1) if q.is_card else (y0, y0 + bh + CLIP_INSET)
+                if not lo <= y < hi:
+                    continue
             zone = min(float(EDGE_PX), (x1 - x0) / 3.0)
             kind = "cue_l" if x - x0 <= zone else "cue_r" if x1 - x <= zone else "cue"
             return Hit(kind, lane, cue_id=q.id, t=t)

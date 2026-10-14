@@ -27,6 +27,7 @@ CLIP_VIDEO = "#3b6ea5"
 CLIP_AUDIO = "#3f8f6b"
 CLIP_IMAGE = "#8a6bb0"
 CLIP_CAPTION = "#b08a3b"
+CLIP_CARD = "#c2577f"          # title cards (字卡) in the caption lane
 CLIP_DISABLED = "#555a62"
 CLIP_SELECTED = "#ffd166"
 PLAYHEAD = "#ff4d4d"
@@ -74,7 +75,7 @@ def qss() -> str:
         background: {PANEL_ALT}; border: 1px solid {BORDER}; border-radius: 4px; padding: 5px 12px; }}
     QToolButton {{ padding: 4px 8px; }}
     QPushButton:hover, QToolButton:hover {{ border-color: {ACCENT}; }}
-    QPushButton:pressed, QToolButton:pressed, QToolButton:checked {{ background: {ACCENT_DARK}; border-color: {ACCENT}; }}
+    QPushButton:pressed, QPushButton:checked, QToolButton:pressed, QToolButton:checked {{ background: {ACCENT_DARK}; border-color: {ACCENT}; }}
     QPushButton:disabled, QToolButton:disabled {{ color: {TEXT_DIM}; background: {PANEL}; border-color: {PANEL_ALT}; }}
     QPushButton#primary {{ background: {ACCENT_DARK}; border-color: {ACCENT}; font-weight: bold; }}
     QPushButton#primary:hover {{ background: {ACCENT}; }}

@@ -12,7 +12,7 @@ from autocut.core.history import History
 from autocut.core.ops import OpError, OpInvalid
 from autocut.core.plan import (AuditReceipt, EditPlan, Finding, PlanError, check_receipt, record_run,
                                set_human_review, set_technical_qa)
-from autocut.core.project import Clip, Project, Sequence, ordered_clips, validate_sequence
+from autocut.core.project import CaptionCue, Clip, Project, Sequence, ordered_clips, validate_sequence
 from autocut.core.subtitles import parse_srt, to_srt
 from autocut.core.timecode import fmt_clock, fmt_timecode, frame_of, parse_timecode, snap_time
 from autocut.util import canonical_json, sha256_hex
@@ -571,6 +571,43 @@ def test_cue_ops(proj):
     n = ops.replace_cues(proj, seq, [(0, 1, "a"), (1, 2, "b")])
     assert len(n) == 2 and len(seq.cues) == 2
     assert ops.remove_cues(proj, seq, [n[0].id]) == 1
+
+
+
+def test_title_card_cue_ops(proj):
+    """字卡 are cues with ``style.kind == "card"``: their own layer, kept by subtitle imports, never merged with a subtitle."""
+    ed = Editor(proj)
+    seq = proj.active_sequence()
+    sub = ops.add_cue(proj, seq, 0.0, 2.0, "字幕")
+    card = ops.add_cue(proj, seq, 0.5, 3.0, "字卡", card=True)
+    assert card.is_card and not sub.is_card and card.to_dict()["style"] == {"kind": "card"}
+    assert CaptionCue.from_dict(card.to_dict()).is_card
+    with pytest.raises(OpError, match="字卡和字幕不能合併"):
+        ops.merge_cues(proj, seq, [sub.id, card.id])
+    left, right = ops.split_cue(proj, seq, card.id, 1.5)
+    assert left.is_card and right.is_card                                     # both halves stay cards
+    ops.merge_cues(proj, seq, [left.id, right.id])
+    new = ops.replace_cues(proj, seq, [(0.0, 1.0, "新字幕")])                 # importing subtitles keeps the card
+    assert [q.text for q in new] == ["新字幕"] and sorted(q.text for q in seq.cues) == ["字卡", "新字幕"]
+    ops.replace_cues(proj, seq, [(0.0, 1.0, "全部重來")], keep_cards=False)
+    assert [q.text for q in seq.cues] == ["全部重來"]
+    # turning a subtitle into a card (and back) is one undo step and keeps any other per-cue style
+    seq.cues[0].style = {"note": "x"}
+    qid, before = seq.cues[0].id, proj.content_json()
+    ed.op("設為字卡", "update_cue", seq.id, qid, card=True)
+    q = proj.active_sequence().find_cue(qid)
+    assert q.is_card and q.style == {"note": "x", "kind": "card"}
+    ed.op("改回字幕", "update_cue", seq.id, qid, card=False)
+    assert proj.active_sequence().find_cue(qid).style == {"note": "x"}
+    ed.undo()
+    ed.undo()
+    assert proj.content_json() == before
+    # ripple edits move cards like subtitles (they are on the sequence timeline)
+    ed.op("放入素材", "place_clip", seq.id, "a1", proj.active_sequence().video_tracks[0].id, start=0, src_out=10)
+    seq = proj.active_sequence()
+    c = ops.add_cue(proj, seq, 6.0, 8.0, "後面的字卡", card=True)
+    ops.ripple_delete_range(proj, seq, 1.0, 3.0)
+    assert (c.start, c.end) == (pytest.approx(4.0), pytest.approx(6.0)) and c.is_card
 
 
 def test_srt_roundtrip():

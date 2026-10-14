@@ -60,6 +60,7 @@ class ShortsParams(_Base):
     transcript_file: str = ""           # .srt/.vtt/.ass whose TEXT decides the highlights (else: same-name file next to
                                         # the video, else speech recognition); see autoedit/highlights.py
     highlight_engine: str = "local"     # local (offline rules) | claude (opt-in: sends the subtitle TEXT only)
+    cutlist_file: str = ""              # 剪輯清單 (autoedit/cutlist.py): cut exactly these shorts instead of searching
 
 
 @dataclass

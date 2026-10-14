@@ -3012,3 +3012,58 @@ def test_every_tab_fits_the_minimum_dock_width_without_clipped_text(narrow_rig):
                       ("checks", r.panel.checks_tab)):
         r.show_tab(tab)
         shot(r.panel, f"{name}_narrow")
+
+
+# ============================================================================================= 字幕: title cards (字卡)
+def test_card_button_turns_the_selection_into_title_cards_and_back(rig):
+    cap = rig.cap
+    assert not cap.b_card.isEnabled()                                           # nothing selected
+    ids = [q.id for q in rig.seq.cues[:2]]
+    rig.st.select_cues(ids)
+    rig.settle()
+    assert cap.b_card.isEnabled() and not cap.b_card.isChecked()
+    with one_undo(rig, "設為字卡"):
+        cap.b_card.click()
+        rig.settle()
+    assert [q.is_card for q in rig.seq.cues] == [True, True, False] and cap.b_card.isChecked()
+    assert table_rows(rig)[0][2] == "第一句"                                    # the text is untouched
+    assert cap.table.item(0, 2).background().color().alpha() > 0 and "字卡" in cap.table.item(0, 2).toolTip()
+    assert not cap.table.item(2, 2).toolTip()
+    assert any("已把 2 則改成字卡" in m for m in rig.status)
+    shot(rig.panel, "captions_cards")
+    rig.st.select_cues(ids)
+    rig.settle()
+    with one_undo(rig, "改回字幕"):
+        cap.b_card.click()
+        rig.settle()
+    assert not any(q.is_card for q in rig.seq.cues) and not cap.b_card.isChecked()
+
+
+def test_srt_export_and_import_leave_title_cards_alone(rig, monkeypatch, tmp_path):
+    rig.st.op("字卡", "update_cue", rig.seq.cues[0].id, card=True)
+    rig.settle()
+    out = tmp_path / "sub.srt"
+    stub(monkeypatch, "save_file", str(out))
+    rig.cap.b_export.click()
+    rig.settle()
+    text = out.read_text(encoding="utf-8")
+    assert "第一句" not in text and "第二句" in text and text.startswith("1\n")  # cards are not subtitles
+    assert any("已匯出 2 則字幕" in m for m in rig.status)
+    stub(monkeypatch, "open_file", str(write_srt(tmp_path / "a.srt")))
+    asked = stub(monkeypatch, "ask", True)
+    with one_undo(rig, "匯入字幕"):
+        rig.cap.b_import.click()
+    assert "2 則" in asked[0][1] and "字卡會保留" in asked[0][1]
+    assert [(q.text, q.is_card) for q in rig.seq.cues if q.is_card] == [("第一句", True)]
+    assert len([q for q in rig.seq.cues if not q.is_card]) == 3
+
+
+def test_only_cards_means_nothing_to_export_as_srt(rig, monkeypatch):
+    for q in list(rig.seq.cues):
+        rig.st.op("字卡", "update_cue", q.id, card=True)
+    rig.settle()
+    saved = stub(monkeypatch, "save_file", "")
+    rig.cap.b_export.click()
+    assert not saved and any("只有字卡" in m for m in rig.status)
+    rig.seq_tab
+    assert "3 張字卡" in rig.panel.sequence_tab.info.text() and "0 則字幕" in rig.panel.sequence_tab.info.text()

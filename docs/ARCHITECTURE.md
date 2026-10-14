@@ -9,7 +9,8 @@
 ## 資料模型（`core/project.py`，schema `autocut.project/1`，副檔名 `.acproj`，JSON）
 - `Project`：`assets{id→Asset}`、`sequences[]`、`active`、`meta`、`revision`（每次變更/復原/重做 +1，單調遞增）。
 - `Asset`：路徑、種類(video/audio/image)、長度、**顯示尺寸**（已套用旋轉與像素比）、fps、聲音資訊、指紋。
-- `Sequence`：`width/height/fps`、`video_tracks`（由下到上）、`audio_tracks`、`cues`（字幕）、`markers`、`caption_style`、`meta`。
+- `Sequence`：`width/height/fps`、`video_tracks`（由下到上）、`audio_tracks`、`cues`（字幕；`style == {"kind": "card"}` 的是字卡，
+  自己一層、樣式由 `card_style(caption_style)` 推導、不寫進 .srt）、`markers`、`caption_style`、`meta`。
 - `Clip`：`start`（時間軸位置）、`src_in/src_out`（素材範圍）、`speed`、`volume`、`fade_in/out`、`transform`、`look`。
   `duration=(src_out-src_in)/speed`。**視訊軌上的片段同時帶畫面與聲音**；音訊軌放配樂/旁白。
 - `Transform`：`fit`(cover/contain/blur)、`zoom`、`cx/cy`（取景窗中心，0..1）、`keys=[[t,cx,cy]...]`（取景運鏡關鍵格，片段內秒數）、`flip_h`。

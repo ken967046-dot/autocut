@@ -169,6 +169,33 @@ def transcribe(path, *, language="zh", model_size="small", traditional=True, all
    這是「不連網」原則的**明確例外**：只有使用者在介面選了 AI 判斷才會連線，介面與 notes 都寫明只傳文字。
 6. **說明**：每支短影音的決策多了「爆點句：『…』（反轉、具體數字，0.95）」與 `highlights` 清單；序列名稱帶上最佳句的前 12 字。
 
+## 3e. 剪輯清單與字卡（`autoedit/cutlist.py`；CLI `shorts --cutlist`；對話框「剪輯清單」，2026-10-14）
+**為什麼加**：自動搜尋只能提出「候選」；使用者（或使用者同意過的 AI 剪輯建議）決定好哪幾段是爆點之後，軟體要**照那幾段剪**——
+包括把後面的金句放到最前面當開場（冷開場）、跳過口誤，以及加字卡。
+1. **格式** `autocut.cutlist/1`（UTF-8 JSON，可有 BOM）：`shorts[]` 每支有 `title`、`ranges`（**來源時間**，依列出的順序播放；
+   可以先列後面的段落；同一刻可出現兩次）、`cards`、`note`。時間可寫 `333.3`、`5:33.3`、`0:05:33.3` 或 SRT 的 `00:05:33,330`。
+   所有欄位先驗證，錯誤用繁中說明「第幾支第幾段／第幾張字卡」哪裡錯；範圍超出影片長度直接拒絕（尾端 0.25 秒內的誤差會被夾住）。
+   清單內容（不含檔名與 `source` 提示）的雜湊寫進 `plan.brief["cutlist"]`，清單一改計畫雜湊就變。
+2. **剪法**：每段各自經過與自動搜尋相同的處理——進出點避開鏡頭切換、段內長停頓縮短（`tighten`）、2 秒規則（第一段太長就切一刀、後半推近）；
+   段與段之間都是真正的剪點。不檢查平台長度帶，也不看「支數」與「目標長度」（介面上會變灰）。決策說明寫出清單標題、備註、是否冷開場、字卡與段內的爆點句。
+3. **字卡**是 `CaptionCue.style == {"kind": "card"}` 的字幕：自己一層（可以和字幕重疊；字卡和字卡之間仍不可重疊），
+   樣式由 `core.project.card_style(序列字幕樣式)` 推導（字級 ×1.15、粗體、黃字、不透明黑底框、畫面上方；字幕本身在上方時改放中間）。
+   `at` = 短影音內的秒數；`source` = **來源時間**——字卡出現在那一刻實際播出的位置（緊湊化與冷開場移動過也對得上；
+   同一刻出現兩次時取第一次；那一刻被剪掉時略過並在 notes 說明）。超出長度的字卡同樣略過並說明。
+4. **字卡在各處**：渲染（ASS 另一個 `Card` 樣式、Layer 1；字卡樣式也算進分段快取的簽章）、預覽畫面（同一個樣式）、
+   時間軸（字幕列變高，上半是字卡、下半是字幕，重疊時都點得到）、檢查器（「字卡」按鈕把選取的字幕改成字卡或改回來，一次復原）。
+   **字卡不是字幕**：不寫進 `.srt`（輸出與「匯出 SRT」都排除）、匯入字幕或自動產生字幕會保留字卡、字幕和字卡不能合併；
+   閱讀速度、換頁率、長度等字幕規則不檢查字卡。
+5. **一起修掉的問題**（用這集真實字幕＋同長度合成影片端對端跑出來的）：
+   - **直式字幕超出畫面**：原本每行 16 字、字高 5.2% → 9:16 一行約 1600 像素，比 1080 寬；libass 不會自動換行，頭尾的字被切掉。
+     現在 `render.ass.wrap_units` 以「左右各留 5% 能放幾個字」為上限（9:16 字幕約 9 字、字卡約 7 字），兩行時平均分配、
+     不切在英文單字或括號中間、右括號不放行首、左括號不放行尾；預覽與渲染用同一套（`RENDER_VERSION` 8，舊快取會重算）。
+   - **被丟掉的附和語讓前一條字幕提早消失**：太短放不下的「是」被丟掉後，前一條仍以它的開始時間為界，留下 0.27 秒空白、
+     閱讀速度因此超標 → 現在先由後往前決定哪些字幕顯示，再以「下一條真的顯示的字幕」為界。
+   - **2 秒規則留下 0.27 秒的推近閃一下**：第一段只比 2.05 秒長一點（冷開場常見）時，切點偏好留給後半至少 0.6 秒。
+   - **`caption.reading`**：說話本身就很快（每秒 8–12 字）、字幕已經接到下一句時，任何時間安排都無法放慢 → 改為**警告**並建議刪減文字；
+     字幕後面明明還有空檔（以影格為單位、扣掉字幕間隔）卻沒用到，仍是**錯誤**（那是規劃器的問題）。
+
 ## 3c. 一鍵字幕（`autoedit/subtitle_gen.py`；CLI `autocut subtitle`；對話框按鈕）
 語音辨識整支影片 → `<影片>.srt`（16 個全形字一條，CJK 斷句規則同 §3.10）＋ `<影片>.words.json`（逐字時間：SRT 存不下，
 長片剪水詞要用；`highlights.word_segments` 會讀它）。已存在時不覆蓋（CLI 要 `--force`，介面會先問）；模型未下載時先徵求同意。
@@ -233,9 +260,9 @@ def transcribe(path, *, language="zh", model_size="small", traditional=True, all
 | `shorts.deadzone` | warn（strict 時 error）| `yt_shorts` 落在範例死區 |
 | `shorts.first_cut` | warn | 第一個視覺剪點（V1 第一個片段的結尾，或第一個取景/zoom 突變）晚於 `first_cut_max` |
 | `shorts.mid_word` | warn | 有逐字時間時，剪點落在字的中間 |
-| `caption.reading` | warn / error | 閱讀速度 > `reading_warn_cps` / `reading_fail_cps`（字數不含空白與標點） |
-| `caption.rate` | warn | 序列 ≥ 20 s 且字幕換頁率 < `caption_rate_warn_per_min`（太稀疏） |
-| `caption.overlap` | error | 兩條字幕重疊超過 `max_caption_overlap` |
+| `caption.reading` | warn / error | 閱讀速度 > `reading_warn_cps`（warn）/ `reading_fail_cps`（字數不含空白與標點）：後面還有空檔可延長＝error；已接到下一句（說話本身太快）＝warn。字卡不檢查 |
+| `caption.rate` | warn | 序列 ≥ 20 s 且字幕換頁率 < `caption_rate_warn_per_min`（太稀疏；字卡不算） |
+| `caption.overlap` | error | 兩條字幕（或兩張字卡）重疊超過 `max_caption_overlap`；字卡與字幕各自一層，彼此可以重疊 |
 | `caption.short` / `caption.long` | warn | 少於 `min_cue_seconds` / 字數超過 `max_cue_chars` |
 | `caption.range` | error | 字幕超出序列範圍 |
 | `assemble.target` | warn | 實際長度與目標差距比例 > `target_tolerance`（來源不足時改為 info） |

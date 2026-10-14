@@ -321,6 +321,23 @@ def test_caption_reading(proj):
     assert not has(ok, "caption.reading")
     punct = run_audit(one_cue_plan("一二三，四五六。七八九？", 15.0, 17.3), proj)   # punctuation does not count
     assert not has(punct, "caption.reading")
+    assert "後面還有空檔" in codes(fail, "caption.reading")[0].message
+
+
+def test_caption_reading_of_fast_speech_packed_back_to_back_is_a_warning(proj):
+    """Verbatim subtitles of fast talk: each caption already runs into the next one, so no timing can slow it down --
+    a warning that says so (shorten the text), not an error that blocks the whole plan."""
+    fast = [CaptionCue(id="ps1_qa", start=15.0, end=16.0, text="一二三四五六七八九十"),
+            CaptionCue(id="ps1_qb", start=16.0, end=17.0, text="一二三四五六七八九十")]
+    r = run_audit(mk_plan([mk_seq("ps1", v=good_v(), cues=good_cues()[:6] + fast
+                                  + [CaptionCue(id="ps1_qc", start=17.0, end=18.5, text="一二三")])]), proj)
+    f = {x.where.split("/")[1]: x for x in codes(r, "caption.reading")}
+    assert set(f) == {"ps1_qa", "ps1_qb"} and all(x.severity == "warn" for x in f.values())
+    assert "說話本身就這麼快" in f["ps1_qa"].message and r.accepted
+    # the same fast caption with free time after it could have stayed up longer: still an error
+    r2 = run_audit(mk_plan([mk_seq("ps1", v=good_v(), cues=good_cues()[:6] + fast)]), proj)
+    f2 = {x.where.split("/")[1]: x for x in codes(r2, "caption.reading")}
+    assert f2["ps1_qa"].severity == "warn" and f2["ps1_qb"].severity == "error" and not r2.accepted
 
 
 def test_caption_rate(proj):

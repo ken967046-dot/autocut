@@ -397,12 +397,20 @@ def _finalize(raw: list[_Raw], tl_end: float, rules: Optional[AuditRules], ids: 
     gen = ids if ids is not None else IdGen("p")
     raw = sorted(raw, key=lambda r: (r.start, r.speech_end, r.order))
     spans: list[list] = []                                # [start, end, text]
-    n = len(raw)
+    # which cues can be shown at all, decided from the end: one with no room (overlapping speech / a cut right after)
+    # is dropped -- and then no longer limits the one before it (a dropped one-word back-channel must not leave a hole)
+    shown_next: list[float] = [math.inf] * len(raw)       # start of the next cue that IS shown
+    keep = [False] * len(raw)
+    nxt = math.inf
+    for i in range(len(raw) - 1, -1, -1):
+        shown_next[i] = nxt
+        if min(nxt - CAP_GAP, tl_end) - raw[i].start >= MIN_VISIBLE:
+            keep[i] = True
+            nxt = raw[i].start
     for i, r in enumerate(raw):
-        nxt = raw[i + 1].start if i + 1 < n else math.inf
-        limit = min(nxt - CAP_GAP, tl_end)
-        if limit - r.start < MIN_VISIBLE:
-            continue                                      # no room to show it (overlapping speech / cut right after)
+        if not keep[i]:
+            continue
+        limit = min(shown_next[i] - CAP_GAP, tl_end)
         end = min(r.speech_end + CAP_PAD, limit)
         end = max(end, min(r.start + min_cue, limit))
         if cps > 0:

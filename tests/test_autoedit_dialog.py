@@ -848,3 +848,27 @@ def test_form_screenshots_at_the_minimum_size(qapp, shorts_env):
     shot(asm, "assemble_form_min")
     for d in (dlg, asm):
         assert d.size().width() >= 900 and d.size().height() >= 640
+
+
+def test_cutlist_row_validates_disables_count_and_is_not_remembered(qapp, shorts_env, media, monkeypatch, tmp_path):
+    calls: list = []
+    serve_plan(monkeypatch, shorts_env, calls=calls)
+    dlg, _ = open_shorts(shorts_env, qapp)
+    row, count = dlg.form.w["cutlist_file"], dlg.form.w["count"]
+    assert count.isEnabled() and row.path() == ""
+    row.set_path(str(tmp_path / "沒有.json"))
+    assert not count.isEnabled() and not dlg.form.w["target_seconds"].isEnabled()   # the list decides count + length
+    assert dlg.start_analysis() is False and "找不到剪輯清單" in dlg.form_note.text()
+    bad = tmp_path / "壞的 清單.json"
+    bad.write_text('{"shorts": [{"ranges": [[5, 3]]}]}', encoding="utf-8")
+    row.set_path(str(bad))
+    assert dlg.start_analysis() is False and "結束時間必須晚於開始時間" in dlg.form_note.text()
+    assert calls == [] and dlg.page == PAGE_FORM
+    good = tmp_path / "第一集.json"
+    good.write_text('{"shorts": [{"title": "一", "ranges": [[1, 3]]}]}', encoding="utf-8")
+    row.set_path(str(good))
+    assert dlg.form.validate() == "" and dlg.form.params().cutlist_file == str(good)
+    forms.save_params(forms.KEY_SHORTS, dlg.form.params())
+    assert forms.load_params(ShortsParams, forms.KEY_SHORTS).cutlist_file == ""   # it belongs to one video
+    row.set_path("")
+    assert count.isEnabled() and dlg.form.w["target_seconds"].isEnabled()

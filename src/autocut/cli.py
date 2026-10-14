@@ -456,7 +456,8 @@ def cmd_shorts(args) -> int:
     params = ShortsParams(platform=args.platform, count=args.count, target_seconds=args.target,
                           captions=captions, caption_file=caption_file, reframe=args.reframe,
                           language=args.language, tighten=not args.no_tighten, music_path=music,
-                          transcript_file=_existing_file(args.subs, "字幕檔"), highlight_engine=args.highlight)
+                          transcript_file=_existing_file(args.subs, "字幕檔"), highlight_engine=args.highlight,
+                          cutlist_file=_existing_file(args.cutlist, "剪輯清單"))
     outdir = _abs(args.output)
     outdir.mkdir(parents=True, exist_ok=True)
     with _cancel_on_ctrl_c() as cancel:
@@ -672,6 +673,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--subs", help="用這個字幕檔（.srt／.vtt／.ass）的文字找爆點（預設：影片旁同名字幕檔或語音辨識）")
     s.add_argument("--highlight", default="local", choices=["local", "claude"],
                    help="爆點判斷：local 本機規則（預設）、claude 由 AI 判斷（要另外安裝並設定 API 金鑰，只傳送字幕文字）")
+    s.add_argument("--cutlist", help="剪輯清單（.json，格式 autocut.cutlist/1）：照清單列出的時間段、順序與字卡剪，"
+                                     "不做自動搜尋（--count 不適用）")
     s.set_defaults(fn=cmd_shorts)
 
     s = add_cmd("longform", "長影片 → 精華長片（重點＋去水詞＋講者特寫）")

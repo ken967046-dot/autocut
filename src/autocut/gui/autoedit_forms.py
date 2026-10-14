@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QSpinBox, QToolButton,
                                QVBoxLayout, QWidget)
 
+from ..autoedit.api import AutoEditError
+from ..autoedit.cutlist import load_cutlist
 from ..autoedit.config import (ASPECTS, PLATFORM_RULES, AssembleParams, LongformParams, ShortsParams,
                                pace_shot_range)
 from . import theme
@@ -32,6 +34,7 @@ KEY_LAST_DIR = "autoedit/last_dir"
 PIP_COMMAND = "pip install -r requirements-speech.txt"
 CAPTION_FILTER = "字幕檔 (*.srt *.ass *.vtt);;所有檔案 (*)"
 MUSIC_FILTER = "音訊檔 (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus);;所有檔案 (*)"
+CUTLIST_FILTER = "剪輯清單 (*.json);;所有檔案 (*)"
 CAPTION_EXTS = (".srt", ".ass", ".vtt")
 PLATFORM_ZH = {"yt_shorts": "YouTube Shorts 短影音", "ig_reels": "Instagram Reels 連續短片",
                "fb_reels": "Facebook Reels 連續短片", "tiktok": "TikTok 短影音"}
@@ -63,6 +66,8 @@ def save_params(key: str, params) -> None:
     d["caption_file"] = ""
     if "transcript_file" in d:
         d["transcript_file"] = ""                        # the subtitle file belongs to one video too
+    if "cutlist_file" in d:
+        d["cutlist_file"] = ""                           # and so does a cut list
     try:
         s = settings()
         s.setValue(key, json.dumps(d, ensure_ascii=False))
@@ -528,6 +533,10 @@ class ShortsForm(_FormBase):
             "platform", items, "決定短影音的長度範圍。YouTube Shorts 會避開 25–45 秒這段（範例校準值，不是定律）。"))
         form.addRow("支數", self.spin("count", 1, 10, 1, 0, " 支",
                                       "最多產生幾支；素材太短或條件太嚴時可能少於這個數字。"))
+        form.addRow("剪輯清單", self.path(
+            "cutlist_file", "選擇剪輯清單", CUTLIST_FILTER, "（不用：自動找爆點）",
+            "選填。已經決定好要剪哪幾段時用：剪輯清單（.json）逐支列出來源時間段、播放順序（可以把後面的金句放到最前面"
+            "當開場、跳過口誤）與字卡。選了就照清單剪，不做自動搜尋，「支數」與長度範圍不適用。"))
         form.addRow("目標長度", self.spin("target_seconds", 5.0, 180.0, 1.0, 1, " 秒",
                                           "偏好的長度。超出平台長度範圍時會自動調整，並在備註說明。"))
         left.addWidget(box)
@@ -613,6 +622,9 @@ class ShortsForm(_FormBase):
         return mode == "auto" or (mode == "off" and bool(self._get["use_speech"]()))
 
     def _sync(self) -> None:
+        listed = bool(self._get["cutlist_file"]())             # a cut list decides how many shorts and how long
+        self.w["count"].setEnabled(not listed)
+        self.w["target_seconds"].setEnabled(not listed)
         self.w["reframe_strength"].setEnabled(self._get["reframe"]() in ("face", "motion"))
         self.strength_label.setEnabled(self.w["reframe_strength"].isEnabled())
         self._sync_captions(bool(self._get["use_speech"]()))
@@ -643,6 +655,14 @@ class ShortsForm(_FormBase):
         lo, hi = float(self._get["min_seconds"]()), float(self._get["max_seconds"]())
         if lo and hi and lo > hi:
             return "最短長度不能大於最長長度（進階設定）。"
+        f = str(self._get["cutlist_file"]())
+        if f:
+            if not os.path.isfile(f):
+                return f"找不到剪輯清單：{f}"
+            try:
+                load_cutlist(f)
+            except AutoEditError as exc:
+                return str(exc)
         return ""
 
 

@@ -242,8 +242,9 @@ def render_sequence(proj: Project, seq: Sequence, out_path: str | os.PathLike,
         warnings.append(f"這台電腦的 ffmpeg 沒有 {encoder}，改用 libx264")
         encoder = "libx264"
     burn = settings.burn_captions
-    if burn and comp.cues and not info.has_ass:
-        warnings.append("這份 ffmpeg 不支援燒入字幕（缺少 libass），已改輸出 .srt 檔")
+    if burn and (comp.cues or comp.cards) and not info.has_ass:
+        warnings.append("這份 ffmpeg 不支援燒入字幕（缺少 libass），已改輸出 .srt 檔"
+                        + ("；字卡沒有辦法輸出" if comp.cards else ""))
         burn = False
         settings.write_srt = True
 
