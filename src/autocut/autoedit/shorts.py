@@ -165,16 +165,21 @@ def _build_short(info: dict, *, feat: sc.Feat, ev, asset: Asset, params: ShortsP
                  fixer: _CutFixer, check_band: bool = True) -> Optional[_Short]:
     """Turn a scored window into V1 pieces (tighten, 2-second rule, zoom alternation); ``None`` when the exact length is
     not allowed by the band.  ``info["ranges"]`` (a cut list) lists several source ranges played in that order -- a
-    cold open, skipped stumbles; every range is tightened on its own and every boundary between ranges is a real cut."""
+    cold open, skipped stumbles; every range is tightened on its own and every boundary between ranges is a real cut.
+    A cut list's own endpoints are the person's decision and are kept (only snapped to frames); scene-cut correction
+    applies to the cuts the machine chooses.  ``info["dropped"]`` lists the (1-based) ranges that yielded nothing."""
     fps = float(params.fps)
+    listed = bool(info.get("cutlist"))
     ranges = info.get("ranges") or [(float(info["t0"]), float(info["t1"]))]
     removals: list[tuple[float, float]] = []
     pieces: list[_P] = []
-    for r0, r1 in ranges:
-        t0 = fixer.fix_in(float(r0))
-        t1 = fixer.fix_out(float(r1))
+    info["dropped"] = []
+    for k, (r0, r1) in enumerate(ranges, 1):
+        t0 = float(r0) if listed else fixer.fix_in(float(r0))
+        t1 = float(r1) if listed else fixer.fix_out(float(r1))
         t0, t1 = snap_time(t0, fps), snap_time(t1, fps)
         if t1 - t0 < MIN_CLIP:
+            info["dropped"].append(k)
             continue
         rem: list[tuple[float, float]] = []
         if params.tighten:
@@ -191,7 +196,10 @@ def _build_short(info: dict, *, feat: sc.Feat, ev, asset: Asset, params: ShortsP
                 b = fixer.fix_out(b)
             if b - a >= 0.1:
                 fixed.append((snap_time(a, fps), snap_time(b, fps)))
-        pieces.extend(_P(a, b) for a, b in fixed if b > a)
+        got = [_P(a, b) for a, b in fixed if b > a]
+        if not got:
+            info["dropped"].append(k)
+        pieces.extend(got)
     if not pieces:
         return None
     # the 2-second rule: a first clip longer than first_cut_max is split with a punch-in on its second half
@@ -382,10 +390,17 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
                     "parts": {}, "stats": {}, "start_kind": "cutlist", "end_kind": "cutlist", "mid_word": False,
                     "cutlist": True, "title": item.title, "note": item.note,
                     "cards": [(c.text, c.at, c.duration, c.source) for c in item.cards]}
+            for k, (a, b) in enumerate(rngs, 1):
+                if b - a < MIN_CLIP - 1e-9:
+                    raise AutoEditError(f"剪輯清單第 {i} 支第 {k} 段落在影片結尾，只剩 {max(b - a, 0.0):.2f} 秒，太短"
+                                        f"（每段至少 {MIN_CLIP:g} 秒）。")
             sh = _build_short(info, feat=feat, ev=ev, asset=asset, params=params, band=band, fixer=fixer,
                               check_band=False)
             if sh is None:
                 raise AutoEditError(f"剪輯清單第 {i} 支「{item.title or '未命名'}」的片段都太短（每段至少 {MIN_CLIP:g} 秒），無法剪出。")
+            for k in info.get("dropped", []):
+                notes.append(f"剪輯清單第 {i} 支第 {k} 段剪完停頓後沒有留下任何畫面，已略過。")
+            notes.extend(_scene_edge_notes(fixer, i, rngs))
             shorts.append(sh)
             rep(0.82 + 0.1 * i / len(cutl.shorts), f"依剪輯清單剪第 {i} 支…")
     elif whole:
@@ -653,6 +668,27 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
 
 
 # ------------------------------------------------------------------------------------ cut lists
+def _scene_edge_notes(fixer: _CutFixer, i: int, ranges: list) -> list[str]:
+    """A listed endpoint is kept as written, but one just before a scene cut (start) or just after one (end) shows a
+    few frames of the neighbouring shot -- say so, with the time that would avoid it, and let the person decide."""
+    out = []
+    for k, (a, b) in enumerate(ranges, 1):
+        s = fixer.near(a)
+        if s is not None and s > a + 1e-6:
+            out.append(f"剪輯清單第 {i} 支第 {k} 段的開頭 {_mmss_ms(a)} 比鏡頭切換（約 {_mmss_ms(s)}）早 {s - a:.2f} 秒，"
+                       f"開頭會先閃一下前一個鏡頭；不想要的話把開頭改成 {_mmss_ms(s)}。")
+        s = fixer.near(b)
+        if s is not None and s < b - 1e-6:
+            out.append(f"剪輯清單第 {i} 支第 {k} 段的結尾 {_mmss_ms(b)} 比鏡頭切換（約 {_mmss_ms(s)}）晚 {b - s:.2f} 秒，"
+                       f"結尾會閃一下下一個鏡頭；不想要的話把結尾改成 {_mmss_ms(s)}。")
+    return out
+
+
+def _mmss_ms(t: float) -> str:
+    m, s = divmod(max(0.0, float(t)), 60.0)
+    return f"{int(m)}:{s:05.2f}"
+
+
 def _best_in_pieces(feat: sc.Feat, pieces: list, k: int) -> list:
     """The ``k`` best sentence units whose middle lies inside any of the pieces (a cut list can skip whole stretches)."""
     if not len(feat.content):

@@ -41,6 +41,7 @@ from .api import AutoEditError
 SCHEMA = "autocut.cutlist/1"
 MAX_SHORTS = 50
 MAX_RANGES = 40
+MIN_RANGE = 0.25                                   # = shorts.MIN_CLIP: a shorter piece is never cut out
 CARD_DEFAULT_SECONDS = 3.0
 
 _HMS = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:[.,]\d+)?)\s*$")
@@ -131,6 +132,8 @@ def parse_cutlist(data: Any, name: str = "") -> CutList:
                 raise _fail(f"{where}第 {k} 段", f"看不懂的時間 {r!r}（可用 333.3、5:33.3、0:05:33.3 或 00:05:33,330）") from None
             if b <= a:
                 raise _fail(f"{where}第 {k} 段", f"結束時間必須晚於開始時間（{r[0]} → {r[1]}）")
+            if b - a < MIN_RANGE - 1e-9:
+                raise _fail(f"{where}第 {k} 段", f"只有 {b - a:.2f} 秒，太短（每段至少 {MIN_RANGE:g} 秒）")
             ranges.append((a, b))
         cards = []
         cards_in = it.get("cards") or []
@@ -166,6 +169,8 @@ def load_cutlist(path: str | Path) -> CutList:
         text = read_text_guess(p)
     except OSError as exc:
         raise AutoEditError(f"讀不到剪輯清單：{p.name}（{exc.__class__.__name__}）") from exc
+    except (UnicodeError, ValueError) as exc:
+        raise AutoEditError(f"剪輯清單的文字編碼無法辨識：{p.name}（請用記事本另存成 UTF-8）") from exc
     try:
         data = json.loads(text)
     except ValueError as exc:

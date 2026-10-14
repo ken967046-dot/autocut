@@ -72,6 +72,7 @@ def test_parse_cutlist_reads_ranges_in_order_cards_and_defaults():
     (lambda d: d["shorts"][1].update(ranges=[[1, 2, 3]]), "第 2 支第 1 段"),
     (lambda d: d["shorts"][1].update(ranges=[["一分鐘", 2]]), "看不懂的時間"),
     (lambda d: d["shorts"][0].update(ranges=[[5, 5]]), "結束時間必須晚於開始時間"),
+    (lambda d: d["shorts"][0].update(ranges=[[30, 30.1], [20, 22]]), "第 1 支第 1 段）：只有 0.10 秒，太短"),
     (lambda d: d["shorts"][0].update(cards=[{"text": ""}]), "每張字卡都要有 text"),
     (lambda d: d["shorts"][0].update(cards=[{"text": "x", "duration": 0}]), "duration 必須大於 0"),
     (lambda d: d["shorts"][0].update(cards=[{"text": "x", "at": "很久"}]), "必須是秒數或時間"),
@@ -95,6 +96,10 @@ def test_load_cutlist_file_errors_and_utf8_bom(tmp_path):
     bad.write_text('{"shorts": [\n  {"ranges": [[1, 2]]},\n', encoding="utf-8")
     with pytest.raises(AutoEditError, match="不是有效的 JSON.*第 3 行"):
         cl.load_cutlist(bad)
+    u16 = tmp_path / "壞掉的編碼.json"
+    u16.write_bytes(b"\xff\xfe\x00")                                        # a UTF-16 BOM, then half a character
+    with pytest.raises(AutoEditError, match="文字編碼無法辨識"):
+        cl.load_cutlist(u16)
     ok = tmp_path / "第一集 剪輯清單.json"
     ok.write_bytes(b"\xef\xbb\xbf" + cl.dump_cutlist([{"title": "中文標題", "ranges": [[1, 2]]}], "a.mp4").encode("utf-8"))
     c = cl.load_cutlist(ok)
@@ -220,13 +225,34 @@ def test_source_pinned_card_follows_the_cut(tmp_path, patched_analysis, source_f
 def test_cutlist_errors_out_of_range_and_too_short(tmp_path, patched_analysis, source_file):
     with pytest.raises(AutoEditError, match="第 1 支第 2 段.*超過影片長度"):
         plan_from(tmp_path, {"shorts": [{"ranges": [[10, 20], [100, 130]]}]}, patched_analysis, source_file)
-    with pytest.raises(AutoEditError, match="片段都太短"):
+    with pytest.raises(AutoEditError, match="第 1 支第 1 段）：只有 0.10 秒，太短"):
         plan_from(tmp_path, {"shorts": [{"title": "太短", "ranges": [[10, 10.1]]}]}, patched_analysis, source_file)
+    # a range that is long enough as written but runs past the end leaves too little once clamped: an error, never a
+    # silently missing piece (Codex REVIEW-5)
+    with pytest.raises(AutoEditError, match="第 1 支第 2 段落在影片結尾，只剩 0.10 秒"):
+        plan_from(tmp_path, {"shorts": [{"ranges": [[20, 25], [119.9, 120.2]]}]}, patched_analysis, source_file)
     with pytest.raises(AutoEditError, match="不是有效的 JSON"):
         bad = tmp_path / "bad.json"
         bad.write_text("{", encoding="utf-8")
         patched_analysis.ev = fake_ev(120.0)
         plan_shorts(fake_proj(source_file), "a1", ShortsParams(cutlist_file=str(bad)))
+
+
+def test_listed_endpoints_are_kept_and_a_near_scene_cut_is_reported(tmp_path, patched_analysis, source_file):
+    """The person's endpoints are the decision: a start 0.2 s before a scene cut is NOT moved onto the cut (that would
+    drop 0.2 s, maybe speech); the plan says the start will flash the previous shot and which time avoids it."""
+    patched_analysis.ev = fake_ev(120.0, speech=True, words=True, scenes=[10.2, 21.9])
+    proj = fake_proj(source_file)
+    proj.assets["a1"].fingerprint = fingerprint_file(source_file)
+    lst = write_list(tmp_path, {"shorts": [{"ranges": [[10, 12], [20, 22]]}]})
+    plan = plan_shorts(proj, "a1", ShortsParams(cutlist_file=lst, tighten=False))
+    clips = Sequence.from_dict(plan.sequences[0]).video_tracks[0].clips
+    assert clips[0].src_in == pytest.approx(10.0) and clips[-1].src_out == pytest.approx(22.0)
+    assert sum(c.duration for c in clips) == pytest.approx(4.0, abs=1 / 30 + 1e-6)
+    start = [n for n in plan.notes if "第 1 支第 1 段的開頭 0:10.00" in n]
+    end = [n for n in plan.notes if "第 1 支第 2 段的結尾 0:22.00" in n]
+    assert start and "早 0.20 秒" in start[0] and "改成 0:10.20" in start[0]
+    assert end and "晚 0.10 秒" in end[0] and "改成 0:21.90" in end[0]
 
 
 def test_cutlist_end_a_little_past_the_video_is_clamped(tmp_path, patched_analysis, source_file):
