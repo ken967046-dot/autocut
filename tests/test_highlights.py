@@ -335,3 +335,21 @@ def test_everyday_connectives_and_articles_are_not_highlights():
     assert hl.filler_spans(u) and hl.score_sentences(u)[0].score == 0.0
     u2 = hl.sentences([{"start": 0, "end": 2, "text": "是我提出的", "words": _w(["是", "我", "提出的"])}])
     assert hl.filler_spans(u2) == []
+
+
+def test_explanatory_why_is_not_a_question_and_only_true_restatements_are_penalised():
+    assert hl.lexical_signals("這也是我為什麼今天找他合作")[1] == []
+    assert hl.lexical_signals("為什麼這種議題會無法解決")[1] == ["question"]
+    u = hl.score_sentences(hl.sentences([
+        {"start": 0, "end": 3, "text": "我剛剛已經強調希望大家可以珍惜。"},
+        {"start": 3, "end": 6, "text": "我們也一再強調我們不是你的打手。"}]))
+    assert "recap" in u[0].tags and "recap" not in u[1].tags
+
+
+def test_rank_ignores_float_noise_from_prefix_sums():
+    # the mean of a constant signal from prefix sums differs in the last bits; it must not become a rank difference
+    x = np.full(1000, 0.02)
+    P = sc._prefix(x)
+    means = np.asarray([(P[i + 50] - P[i]) / 50 for i in range(0, 900, 7)])
+    assert np.ptp(means) > 0                                    # the noise really is there ...
+    assert np.allclose(sc._rank(means), 0.5)                    # ... and ranking ignores it

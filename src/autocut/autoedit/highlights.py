@@ -32,7 +32,8 @@ from .captions import _is_punct, _is_strong, _timed_chars
 # and downloaded subtitles are often Simplified even when the user works in Traditional.
 _CATS: list[tuple[str, float, str, str]] = [
     ("question", 1.0, "提問",
-     r"[？?]|為什麼|为什么|為甚麼|怎麼會|怎么会|怎麼辦|怎么办|如何|你知道|你知不知道|有沒有想過|有没有想过|是不是|到底|難道|难道|憑什麼|凭什么"
+     # 「這也是我為什麼…」 explains, it does not ask (fixed-width look-behinds: 是／是我／是我們)
+     r"[？?]|(?<!是)(?<!是我)(?<!是我們)(?<!是我们)(?:為什麼|为什么|為甚麼)|怎麼會|怎么会|怎麼辦|怎么办|如何|你知道|你知不知道|有沒有想過|有没有想过|是不是|到底|難道|难道|憑什麼|凭什么"
      r"|(?i:\bwhy\b|\bhow come\b|\bwhat if\b|\bdid you know\b)"),
     ("twist", 1.3, "反轉",
      r"沒想到|没想到|竟然|居然|原來|原来|反而|偏偏|誰知道|谁知道|後來才|后来才|突然|沒有人|没有人|真相|結果竟|结果竟"
@@ -69,6 +70,7 @@ _CATS: list[tuple[str, float, str, str]] = [
 _CAT_RE = [(name, w, label, re.compile(p)) for name, w, label, p in _CATS]
 CATEGORY_LABEL = {name: label for name, _w, label, _p in _CATS}
 CATEGORY_LABEL["llm"] = "AI 判定"
+CATEGORY_LABEL["recap"] = "重述（扣分）"
 
 # filler words: PURE ones are always filler; the CONTEXT ones only when they stand alone (a whole word in the word
 # timings, or repeated back to back) -- "那個人" is not a filler, "那個…那個" is.
@@ -82,6 +84,11 @@ _PURE_RE = re.compile(r"^(?:" + "|".join(re.escape(f) for f in FILLERS_PURE) + r
 _FILLER_ANY = re.compile("|".join(re.escape(f) for f in sorted(FILLERS_PURE + FILLERS_CONTEXT, key=len, reverse=True)),
                          re.IGNORECASE)
 _STRIP = " 　,，、。.！!？?；;：:…~～-—\"'「」『』()（）"
+
+# restating what was ALREADY said (「我剛剛已經強調」「我再次強調」) marks a repetitive stretch.  「我們也一再強調…」 is NOT
+# included: it usually introduces the key line (「…我們叫發聲炮臺，不是你的打手」).
+_RECAP_RE = re.compile(r"(?:已經|已经|再次|再一次)(?:強調|强调)")
+RECAP_PENALTY = 0.3
 
 HOOK_SPAN = 3.0             # seconds at the head of a short whose content counts as its hook
 MIN_UNIT_CHARS = 2          # a sentence with fewer content characters than this scores 0
@@ -311,6 +318,9 @@ def score_sentences(units: list[Sentence], feat=None, overrides: Optional[dict] 
             s.score = 0.0
             continue
         sc = 0.65 * lex + 0.35 * s.delivery - 0.5 * s.filler_ratio
+        if _RECAP_RE.search(s.text):
+            sc -= RECAP_PENALTY
+            s.tags = s.tags + ["recap"]
         s.score = round(min(max(sc, 0.0), 1.0), 4)
     return units
 

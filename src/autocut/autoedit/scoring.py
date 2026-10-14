@@ -107,10 +107,15 @@ def _prefix(a: np.ndarray) -> np.ndarray:
 
 
 def _rank(x: np.ndarray) -> np.ndarray:
-    """Percentile rank 0..1 among ``x`` (ties share the middle rank; a constant array is 0.5)."""
+    """Percentile rank 0..1 among ``x`` (ties share the middle rank; a constant array is 0.5).
+
+    Values are rounded (9 significant decimals) first: means of a constant signal computed from prefix sums differ in
+    the last bits (0.02 vs 0.0199999...), and ranking would turn that float noise into a 0.2-vs-0.8 difference -- a
+    static podcast camera has an almost constant motion level."""
     n = x.size
     if n <= 1:
         return np.full(n, 0.5)
+    x = np.round(np.asarray(x, dtype=np.float64), 9)
     s = np.sort(x)
     lo = np.searchsorted(s, x, side="left")
     hi = np.searchsorted(s, x, side="right")
