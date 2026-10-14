@@ -59,7 +59,8 @@ _CATS: list[tuple[str, float, str, str]] = [
     ("number", 0.8, "具體數字",
      r"[0-9０-９]+(?:[.．,][0-9]+)?\s*(?:個|个|種|种|步|招|點|点|%|％|倍|元|塊|块|萬|万|億|亿|分鐘|分钟|秒|年|天|次|小時|小时|公斤|歲|岁|人)"
      # Chinese numerals, but never a bare 一 (一個／一種／一點／一次 are articles, not specific numbers)
-     r"|(?:[二兩两三四五六七八九十百千萬万億亿]|一[十百千萬万億亿])[一二兩两三四五六七八九十百千萬万億亿]*"
+     # (never starting with a multiplier: 萬一個案 = "in case", not a number; 零 continues: 一百零一元)
+     r"|(?:[二兩两三四五六七八九十]|一[十百千萬万億亿])[零〇一二兩两三四五六七八九十百千萬万億亿]*"
      r"(?:個|个|種|种|步|招|點|点|倍|元|塊|块|萬|万|億|亿|分鐘|分钟|年|天|次|歲|岁)"),
     ("opinion", 0.6, "鮮明觀點",
      r"絕對|绝对|根本|完全|不可能|必須|必须|千萬不要|千万不要|老實說|老实说|說實話|说实话|坦白說|坦白说|我敢說|我敢说|一定是|錯了|错了|最好|最爛|最烂"
@@ -201,8 +202,9 @@ def merge_fragments(segments: Optional[Sequence[dict]]) -> list[dict]:
     phrase is split across cues and the lexicon never sees it whole.  Consecutive segments are joined while the previous
     one does not end a sentence (。！？), the gap is under ``MERGE_GAP`` and the clause stays under ``MERGE_MAX_SECONDS``;
     a clause already ``MERGE_SOFT_SECONDS`` long also ends at any pause of ``MERGE_SOFT_GAP``.  Punctuated, sentence-length
-    segments (speech recognition, hand-made subtitles) pass through unchanged.  Word timings travel along; ``asset_id``
-    of the first segment is kept."""
+    segments (speech recognition, hand-made subtitles) pass through unchanged.  A segment that is only a back-channel or
+    filler (「沒錯沒錯」「嗯」) stays on its own, and a known ``speaker`` change always ends the clause.  Word timings travel
+    along; ``asset_id`` / ``speaker`` of the first segment are kept."""
     out: list[dict] = []
     for seg in segments or []:
         text = str(seg.get("text") or "").strip()
@@ -213,6 +215,12 @@ def merge_fragments(segments: Optional[Sequence[dict]]) -> list[dict]:
         except (KeyError, TypeError, ValueError):
             continue
         cur = out[-1] if out else None
+        # a listener's back-channel (「沒錯沒錯」「嗯」) is never glued onto the speaker's clause, and a known speaker
+        # change always ends the clause (REVIEW-4, Codex)
+        backchannel = content_chars(_FILLER_ANY.sub("", text)) == 0
+        if cur is not None and (backchannel or cur.get("_bc") or
+                                ("speaker" in seg and seg.get("speaker") != cur.get("speaker"))):
+            cur = None
         if cur is not None:
             gap = a - float(cur["end"])
             length = float(cur["end"]) - float(cur["start"])
@@ -230,9 +238,14 @@ def merge_fragments(segments: Optional[Sequence[dict]]) -> list[dict]:
         d = {"start": a, "end": b, "text": text}
         if seg.get("words"):
             d["words"] = list(seg["words"])
-        if "asset_id" in seg:
-            d["asset_id"] = seg["asset_id"]
+        for key in ("asset_id", "speaker"):
+            if key in seg:
+                d[key] = seg[key]
+        if backchannel:
+            d["_bc"] = True
         out.append(d)
+    for d in out:
+        d.pop("_bc", None)
     return out
 
 

@@ -353,3 +353,22 @@ def test_rank_ignores_float_noise_from_prefix_sums():
     means = np.asarray([(P[i + 50] - P[i]) / 50 for i in range(0, 900, 7)])
     assert np.ptp(means) > 0                                    # the noise really is there ...
     assert np.allclose(sc._rank(means), 0.5)                    # ... and ranking ignores it
+
+
+def test_merge_keeps_back_channels_and_speakers_apart_and_respects_sentence_ends():
+    # REVIEW-4 (Codex): a question plus the other person's 「沒錯沒錯」 must not become one unit
+    segs = hl.merge_fragments([{"start": 0, "end": 1.4, "text": "你有沒有被騙"}, {"start": 1.4, "end": 2.8, "text": "沒錯沒錯"},
+                               {"start": 2.8, "end": 4.0, "text": "我被騙了很多次"}])
+    assert [s["text"] for s in segs] == ["你有沒有被騙", "沒錯沒錯", "我被騙了很多次"]
+    spk = hl.merge_fragments([{"start": 0, "end": 1, "text": "我覺得", "speaker": "A"},
+                              {"start": 1, "end": 2, "text": "其實不是", "speaker": "B"}])
+    assert len(spk) == 2 and spk[1]["speaker"] == "B"
+    # a sentence end (even with trailing space / closing quote) is never merged across
+    for first in ("第一句。 ", "他說「好。」 "):
+        assert len(hl.merge_fragments([{"start": 0, "end": 1.4, "text": first}, {"start": 1.4, "end": 2.8, "text": "第二句"}])) == 2
+
+
+def test_number_rule_edge_cases():
+    assert "number" in hl.lexical_signals("一百零一元")[1]
+    assert "number" not in hl.lexical_signals("萬一個案出錯")[1]
+    assert "number" not in hl.lexical_signals("這一年多")[1]
