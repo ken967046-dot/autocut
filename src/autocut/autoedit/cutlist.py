@@ -43,6 +43,7 @@ MAX_SHORTS = 50
 MAX_RANGES = 40
 MIN_RANGE = 0.25                                   # = shorts.MIN_CLIP: a shorter piece is never cut out
 CARD_DEFAULT_SECONDS = 3.0
+CARD_MIN_SECONDS = 0.5                             # a card shown for less is a flash nobody can read
 
 _HMS = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:[.,]\d+)?)\s*$")
 
@@ -73,6 +74,13 @@ class CutList:
 
 def parse_time(value: Any) -> float:
     """``333.3`` / ``"5:33.3"`` / ``"0:05:33.3"`` / ``"00:05:33,330"`` -> seconds.  Raises ``ValueError``."""
+    try:
+        return _parse_time(value)
+    except OverflowError:                          # a 400-digit integer: no time, just nonsense
+        raise ValueError(value) from None
+
+
+def _parse_time(value: Any) -> float:
     if isinstance(value, bool):
         raise ValueError(value)
     if isinstance(value, (int, float)):
@@ -152,8 +160,8 @@ def parse_cutlist(data: Any, name: str = "") -> CutList:
                 src = parse_time(c["source"]) if "source" in c else None
             except (TypeError, ValueError):
                 raise _fail(f"{where}字卡 {k}", "at／source／duration 必須是秒數或時間") from None
-            if dur <= 0:
-                raise _fail(f"{where}字卡 {k}", "duration 必須大於 0")
+            if dur < CARD_MIN_SECONDS - 1e-9:
+                raise _fail(f"{where}字卡 {k}", f"duration 至少要 {CARD_MIN_SECONDS:g} 秒（太短看不清楚）")
             cards.append(Card(str(c["text"]).strip(), at, dur, src))
         shorts.append(CutShort(title, ranges, cards, str(it.get("note") or "").strip()))
     canon = {"schema": SCHEMA, "shorts": [{"title": s.title, "ranges": [[round(a, 4), round(b, 4)] for a, b in s.ranges],

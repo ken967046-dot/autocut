@@ -764,6 +764,20 @@ def test_first_cut_split_leaves_a_real_second_half_when_the_clip_allows():
     feat = sc.Feat(ev, None)
     t = sc.first_cut_time(feat, 10.0, 12.17, 2.05)
     assert t is not None and 10.0 + 1.0 - 1e-9 <= t <= 12.17 - sc.SECOND_HALF_MIN + 1e-9
-    # a clip so short that 0.6 s cannot be kept still gets a valid split (the old 0.25 s floor)
-    t2 = sc.first_cut_time(feat, 10.0, 11.3, 1.0)
-    assert t2 is not None and t2 <= 11.3 - 0.25 + 1e-9
+    # a clip so short that 0.6 s cannot be kept (b - 0.6 is before the earliest allowed split) still gets a valid split
+    # in the old range: second half between 0.25 and 0.6 s (REVIEW-5: the previous case never reached this branch)
+    t2 = sc.first_cut_time(feat, 10.0, 11.05, 1.0)
+    assert t2 is not None and 11.05 - sc.SECOND_HALF_MIN < t2 <= 11.05 - 0.25 + 1e-9 and t2 >= 10.0 + 0.25
+
+
+def test_first_cut_split_prefers_a_word_boundary_over_a_longer_second_half():
+    """Words 10.0-10.95, 10.95-11.75, 11.75-12.3 in a 2.3 s first clip: the only word end in the split window is 11.75,
+    which leaves 0.55 s.  That beats a cut inside 「10.95-11.75」 just to keep 0.6 s (a mid-word cut is a defect the audit
+    reports; REVIEW-5)."""
+    ev = fake_ev(60.0, burst=60.0, gap=0.0)
+    feat = sc.Feat(ev, None)
+    words = [(10.0, 10.95), (10.95, 11.75), (11.75, 12.3)]
+    assert sc.first_cut_time(feat, 10.0, 12.3, 2.05, words) == pytest.approx(11.75)
+    # with a word end inside the narrow window, that one is taken (the 0.6 s preference still applies)
+    words2 = [(10.0, 10.9), (10.9, 11.5), (11.5, 11.75), (11.75, 12.3)]
+    assert sc.first_cut_time(feat, 10.0, 12.3, 2.05, words2) == pytest.approx(11.5)

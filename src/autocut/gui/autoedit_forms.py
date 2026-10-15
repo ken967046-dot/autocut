@@ -625,6 +625,7 @@ class ShortsForm(_FormBase):
         listed = bool(self._get["cutlist_file"]())             # a cut list decides how many shorts and how long
         self.w["count"].setEnabled(not listed)
         self.w["target_seconds"].setEnabled(not listed)
+        self.w["highlight_engine"].setEnabled(not listed)       # nothing to search: the AI judge is not called
         self.w["reframe_strength"].setEnabled(self._get["reframe"]() in ("face", "motion"))
         self.strength_label.setEnabled(self.w["reframe_strength"].isEnabled())
         self._sync_captions(bool(self._get["use_speech"]()))

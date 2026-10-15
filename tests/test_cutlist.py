@@ -74,7 +74,10 @@ def test_parse_cutlist_reads_ranges_in_order_cards_and_defaults():
     (lambda d: d["shorts"][0].update(ranges=[[5, 5]]), "結束時間必須晚於開始時間"),
     (lambda d: d["shorts"][0].update(ranges=[[30, 30.1], [20, 22]]), "第 1 支第 1 段）：只有 0.10 秒，太短"),
     (lambda d: d["shorts"][0].update(cards=[{"text": ""}]), "每張字卡都要有 text"),
-    (lambda d: d["shorts"][0].update(cards=[{"text": "x", "duration": 0}]), "duration 必須大於 0"),
+    (lambda d: d["shorts"][0].update(cards=[{"text": "x", "duration": 0}]), "duration 至少要 0.5 秒"),
+    (lambda d: d["shorts"][0].update(cards=[{"text": "閃一下", "duration": 0.05}]), "duration 至少要 0.5 秒"),
+    (lambda d: d["shorts"][0].update(ranges=[[10 ** 400, 10 ** 400 + 5]]), "看不懂的時間"),
+    (lambda d: d["shorts"][0].update(cards=[{"text": "x", "duration": 10 ** 400}]), "必須是秒數或時間"),
     (lambda d: d["shorts"][0].update(cards=[{"text": "x", "at": "很久"}]), "必須是秒數或時間"),
     (lambda d: d["shorts"][0].update(cards=[{"text": "x", "source": "-1"}]), "必須是秒數或時間"),
     (lambda d: d["shorts"][0].update(cards=[{"text": "x", "at": 1, "source": 2}]), "只能擇一"),
@@ -170,7 +173,7 @@ def test_cutlist_plan_cuts_the_listed_ranges_in_order_with_cards(tmp_path, patch
     shorts = [d for d in plan.decisions if d["kind"] == "short"]
     assert [d["summary"].split(" · ")[0] for d in shorts] == ["冷開場", "一整段", "剪輯清單"]
     assert "先放結論" in shorts[0]["why"] and "第 1 段取自後面的內容當開場" in shorts[0]["why"]
-    assert "字卡：開場字卡／太晚的字卡" in shorts[0]["why"]
+    assert "字卡：開場字卡；" in shorts[0]["why"] and "太晚的字卡" not in shorts[0]["why"]   # only what is shown
     tight = [d for d in plan.decisions if d["kind"] == "tighten"]
     assert len(tight) == 3 and tight[0]["evidence"]["ranges"] == [[60.0, 64.0], [40.0, 52.0]]
     assert plan.brief["cutlist"] == {"name": "剪輯清單.json", "sha256": cl.load_cutlist(params.cutlist_file).sha256,
@@ -287,3 +290,123 @@ def test_cli_shorts_cutlist(media_dir, tmp_path, capsys):
     far = write_list(tmp_path, {"shorts": [{"ranges": [[30, 40]]}]}, "far.json")
     rc = cli.main(["shorts", str(src), "-o", str(out), "--cutlist", far, "--captions", "off"])
     assert rc == 1 and "超過影片長度" in capsys.readouterr().err
+
+
+# ================================================================================================ REVIEW-5 (panel)
+def _cards(plan, k=0):
+    return [(q.text, round(q.start, 3), round(q.end, 3)) for q in Sequence.from_dict(plan.sequences[k]).cues if q.is_card]
+
+
+def test_cards_never_overlap_and_a_shortened_or_skipped_card_is_explained(tmp_path, patched_analysis, source_file):
+    """Two cards 1.5 s apart (3 s each) used to give a plan its own audit rejected (the CLI then lost every short);
+    a card pinned to a source moment can land on an 'at' card after pause trimming, which nobody can foresee."""
+    data = {"shorts": [{"title": "兩張", "ranges": [[40, 52]],
+                        "cards": [{"text": "標題", "at": 0}, {"text": "補充", "at": 1.5},
+                                  {"text": "撞在一起", "at": 1.5}]}]}
+    proj, _params, plan = plan_from(tmp_path, data, patched_analysis, source_file)
+    cards = _cards(plan)
+    assert [c[0] for c in cards] == ["標題", "撞在一起"]                         # same start: the later listed one wins
+    assert cards[0][1:] == (0.0, 1.5) and cards[1][1] == 1.5                     # 標題 ends where the next card starts
+    assert any("標題" in n and "只顯示 1.5 秒（清單設定 3 秒）：下一張字卡接著出現" in n for n in plan.notes)
+    assert any("補充" in n and "已略過" in n for n in plan.notes)
+    receipt = audit_plan(plan, proj)
+    assert receipt.accepted and not [f for f in receipt.findings if f.rule in ("caption.overlap", "card.reading")]
+    shorts = [d for d in plan.decisions if d["kind"] == "short"]
+    assert "字卡：標題／撞在一起；" in shorts[0]["why"]
+    # a source-pinned card that trimming moved onto an 'at' card: still no overlap
+    pinned = {"shorts": [{"ranges": [[45, 55], [20, 30]], "cards": [{"text": "A", "at": 9}, {"text": "B", "source": 21}]}]}
+    proj2, _p, plan2 = plan_from(tmp_path, pinned, patched_analysis, source_file)
+    c2 = _cards(plan2)
+    assert len(c2) == 2 and c2[0][2] <= c2[1][1] + 1e-9
+    assert audit_plan(plan2, proj2).accepted
+
+
+def test_a_card_cut_short_by_the_end_of_the_short_is_skipped_or_noted(tmp_path, patched_analysis, source_file):
+    # 12 s of source tightened to ~10.7 s: a 4 s card at 10.1 would show 0.57 s (31 chars/s) -> skipped, with the reason
+    data = {"shorts": [{"title": "結尾", "ranges": [[40, 52]],
+                        "cards": [{"text": "一二三四五六七八九十一二三四五六七八", "at": 10.1, "duration": 4},
+                                  {"text": "後面還有", "at": 8.0, "duration": 4}]}]}
+    _proj, _params, plan = plan_from(tmp_path, data, patched_analysis, source_file)
+    seq = Sequence.from_dict(plan.sequences[0])
+    cards = _cards(plan)
+    assert [c[0] for c in cards] == ["後面還有"] and cards[0][2] == pytest.approx(seq.duration, abs=1e-3)
+    assert any("一二三四" in n and "已略過" in n and "這支短影音在這裡結束" in n for n in plan.notes)
+    assert any("後面還有" in n and "清單設定 4 秒" in n and "這支短影音在這裡結束" in n for n in plan.notes)
+
+
+def test_decisions_describe_what_was_cut(tmp_path, patched_analysis, source_file):
+    """Cold open = the first range comes from later than ANY range after it (not only the second); a cut-list short
+    has no made-up score (the review card printed 分數 0.00)."""
+    from autocut.gui.autoedit_review import build_candidates
+    data = {"shorts": [{"title": "三段", "ranges": [[100, 104], [110, 114], [5, 9]]},
+                       {"title": "照順序", "ranges": [[5, 9], [100, 104]]}]}
+    proj, _params, plan = plan_from(tmp_path, data, patched_analysis, source_file)
+    shorts = [d for d in plan.decisions if d["kind"] == "short"]
+    assert "冷開場" in shorts[0]["why"] and "冷開場" not in shorts[1]["why"]
+    assert shorts[0]["summary"].endswith("· 3 段") and all(d["score"] is None for d in shorts)
+    assert all(Sequence.from_dict(s).meta["shorts"]["score"] is None for s in plan.sequences)
+    cands = build_candidates(plan, proj.assets)
+    assert cands and all("分數" not in c.headline(i) for i, c in enumerate(cands, 1))
+
+
+def test_voice_and_face_statistics_cover_only_the_played_pieces(tmp_path, patched_analysis, source_file):
+    """Neither played range has a voice (or a face), but the skipped middle does: the no-voice music boost must apply
+    and the face ratio must be 0 (they were computed over min..max of the source)."""
+    import subprocess
+    from test_shorts import HAVE_FFMPEG
+    if not HAVE_FFMPEG:
+        pytest.skip("ffmpeg needed to make a music file")
+    music = tmp_path / "bgm.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=220:sample_rate=44100:duration=10", str(music)], check=True)
+    ev = fake_ev(120.0, speech=True, faces=(40.0, 80.0))
+    for lo, hi in ((0.0, 12.0), (100.0, 112.0)):                               # silence the two played stretches
+        for k in range(int(lo * 20), int(hi * 20)):
+            ev.voice[k] = 0.0
+    patched_analysis.ev = ev
+    proj = fake_proj(source_file)
+    lst = write_list(tmp_path, {"shorts": [{"ranges": [[100, 108], [2, 9]]}]})
+    plan = plan_shorts(proj, "a1", ShortsParams(cutlist_file=lst, tighten=False, music_path=str(music),
+                                                music_gain_db=-20.0, captions="off"))
+    music_d = next(d for d in plan.decisions if d["kind"] == "music")
+    assert music_d["evidence"]["voice_ratio"] == 0.0 and music_d["evidence"]["gain_db"] > -20.0   # boosted
+    reframe_d = next(d for d in plan.decisions if d["kind"] == "reframe")
+    assert reframe_d["evidence"]["face_ratio"] == 0.0
+
+
+def test_scene_refinement_is_limited_to_the_played_pieces(tmp_path, patched_analysis, source_file, monkeypatch):
+    """A cold open spanning most of an hour refined every scene cut in between (one ffmpeg decode each, ~450 calls);
+    only the cuts inside the played pieces matter."""
+    calls: list[float] = []
+
+    def fake_refine(path, est, fps, window=0.6):
+        calls.append(est)
+        return est
+    monkeypatch.setattr("autocut.analysis.refine_cut", fake_refine)
+    ev = fake_ev(3600.0, burst=4.0, gap=1.0, scenes=[6.0 * k for k in range(1, 600)])
+    patched_analysis.ev = ev
+    proj = fake_proj(source_file, dur=3600.0)
+    lst = write_list(tmp_path, {"shorts": [{"ranges": [[3000.5, 3010.5], [300.5, 330.5]]}]})
+    plan_shorts(proj, "a1", ShortsParams(cutlist_file=lst, reframe="face", captions="off"))
+    assert 0 < len(set(calls)) <= 12, sorted(set(calls))
+    assert all(2995 < t < 3016 or 295 < t < 336 for t in calls)
+
+
+def test_the_ai_judge_is_not_called_for_a_cut_list(tmp_path, patched_analysis, source_file, monkeypatch):
+    called: list = []
+    monkeypatch.setattr("autocut.autoedit.llm_judge.judge_sentences", lambda *a, **k: called.append(a) or (None, {}))
+    _proj, _params, plan = plan_from(tmp_path, {"shorts": [{"ranges": [[20, 30]]}]}, patched_analysis, source_file,
+                                     highlight_engine="claude")
+    assert called == [] and any("沒有傳送任何字幕" in n for n in plan.notes)
+    assert plan.brief["highlight_engine"]["skipped"] == "cutlist"
+
+
+def test_the_caption_decision_counts_subtitles_not_cards(tmp_path, patched_analysis, source_file):
+    data = {"shorts": [{"ranges": [[20, 30]], "cards": [{"text": "一二三四五六七八九十一二三四五六七八九十一二三", "duration": 1}]},
+                       {"ranges": [[20, 30]], "cards": [{"text": "只有字卡", "duration": 2}]}]}
+    _proj, _params, plan = plan_from(tmp_path, data, patched_analysis, source_file, captions="auto")
+    cap = [d for d in plan.decisions if d["kind"] == "caption"]
+    seq = Sequence.from_dict(plan.sequences[0])
+    n_subs = sum(1 for q in seq.cues if not q.is_card)
+    assert cap[0]["summary"].startswith(f"{n_subs} 條字幕") and cap[0]["summary"].endswith("另有 1 張字卡")
+    assert cap[0]["evidence"]["max_chars"] < 23 and cap[0]["evidence"]["cards"] == 1

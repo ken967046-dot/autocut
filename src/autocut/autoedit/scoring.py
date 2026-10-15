@@ -435,15 +435,19 @@ def first_cut_time(feat: Feat, a: float, b: float, first_cut_max: float, words: 
     lo = min(a + min(1.0, limit * 0.55), hi - 0.1)
     if hi < a + 0.5 or hi <= lo:
         return None
-    if min(hi, b - SECOND_HALF_MIN) > lo:                           # ...and preferably not a split-second zoom flash
-        hi = min(hi, b - SECOND_HALF_MIN)
-    cand = [t for t in np.arange(lo, hi + 1e-9, 0.05)]
+    # preferably not a split-second zoom flash: leave the second half SECOND_HALF_MIN when the clip allows -- but a cut
+    # between two words beats that preference (a mid-word cut is a real defect, a 0.55 s second half is not)
+    narrow = min(hi, b - SECOND_HALF_MIN)
+    windows = [narrow, hi] if narrow > lo else [hi]
+    cand: list = []
     if words:
-        gaps = [we for _ws, we in words if lo - 1e-9 <= we <= hi + 1e-9]       # between two words
-        if gaps:
-            cand = sorted(set(gaps))
-        else:
-            cand = [t for t in cand if not inside_word(t, words)] or cand
+        for h in windows:
+            cand = sorted({we for _ws, we in words if lo - 1e-9 <= we <= h + 1e-9})   # between two words
+            if cand:
+                break
+    if not cand:
+        grid = [t for t in np.arange(lo, windows[0] + 1e-9, 0.05)]
+        cand = ([t for t in grid if not inside_word(t, words)] or grid) if words else grid
     best = min(cand, key=lambda t: (round(feat.energy_at(t), 1), -t))
     return float(best)
 

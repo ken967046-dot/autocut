@@ -858,6 +858,7 @@ def test_cutlist_row_validates_disables_count_and_is_not_remembered(qapp, shorts
     assert count.isEnabled() and row.path() == ""
     row.set_path(str(tmp_path / "沒有.json"))
     assert not count.isEnabled() and not dlg.form.w["target_seconds"].isEnabled()   # the list decides count + length
+    assert not dlg.form.w["highlight_engine"].isEnabled()           # nothing is searched: the AI judge is not called
     assert dlg.start_analysis() is False and "找不到剪輯清單" in dlg.form_note.text()
     bad = tmp_path / "壞的 清單.json"
     bad.write_text('{"shorts": [{"ranges": [[5, 3]]}]}', encoding="utf-8")
@@ -871,4 +872,4 @@ def test_cutlist_row_validates_disables_count_and_is_not_remembered(qapp, shorts
     forms.save_params(forms.KEY_SHORTS, dlg.form.params())
     assert forms.load_params(ShortsParams, forms.KEY_SHORTS).cutlist_file == ""   # it belongs to one video
     row.set_path("")
-    assert count.isEnabled() and dlg.form.w["target_seconds"].isEnabled()
+    assert count.isEnabled() and dlg.form.w["target_seconds"].isEnabled() and dlg.form.w["highlight_engine"].isEnabled()

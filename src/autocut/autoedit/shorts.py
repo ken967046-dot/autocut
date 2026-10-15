@@ -362,7 +362,12 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
     # ---------------------------------------------------------------- 2. band
     band = sc.plan_band(params)
     notes.extend(band.notes)
-    overrides, judge_info = _judge(params, plan_segments, notes, cancel)
+    if params.cutlist_file and str(getattr(params, "highlight_engine", "local") or "local") != "local":
+        # the cut list fixes the shorts: nothing to search, so nothing is sent (local scores still explain the picks)
+        notes.append("使用剪輯清單時不需要 AI 判斷爆點：沒有傳送任何字幕，爆點句說明改用本機規則。")
+        overrides, judge_info = None, {"engine": "local", "requested": params.highlight_engine, "skipped": "cutlist"}
+    else:
+        overrides, judge_info = _judge(params, plan_segments, notes, cancel)
     feat = sc.Feat(ev, plan_segments, overrides)
     if not feat.words:                                      # subtitle-file text + speech-recognition word timings
         feat.words = sc.transcript_words(hl.word_segments(ev, asset))
@@ -473,7 +478,8 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
             tr.id = ids("t")
         seq.caption_style = style
         v1 = seq.video_tracks[0]
-        scenes_here = fixer.exact_scenes(t_first, t_last) if (ev.scenes and params.reframe in ("face", "motion")) else []
+        card_cues = _place_cards(info.get("cards", []), sh, fps, name, notes, ids) if from_list else []
+        info["cards_placed"] = [q.text for q in card_cues]
         face_total = 0.0
         jumps = 0
         modes: dict[str, float] = {}
@@ -482,10 +488,14 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
                 tf = Transform(fit="blur", zoom=1.0, cx=0.5, cy=0.5, keys=[])
                 p.info = {"mode_used": "blur", "face_ratio": 0.0, "n_keys": 0, "jumps": 0}
             else:
+                scenes_here = None
+                if ev.scenes and params.reframe in ("face", "motion"):
+                    _check(cancel)
+                    # only the cuts this piece can contain (a cold open spans most of the source: refine_cut is a decode)
+                    scenes_here = fixer.exact_scenes(p.a - CORRECT_NEAR, p.b + CORRECT_NEAR)
                 keys, p.info = reframe_keys(ev, asset, p.a, p.b, int(params.width), int(params.height),
                                             mode=params.reframe, strength=float(params.reframe_strength), zoom=p.zoom,
-                                            punch_in_at=0.0 if p.zoom > 1.0 else None, fps=fps,
-                                            scenes=scenes_here if (ev.scenes and params.reframe in ("face", "motion")) else None)
+                                            punch_in_at=0.0 if p.zoom > 1.0 else None, fps=fps, scenes=scenes_here)
                 p.keys = keys
                 tf = Transform(fit="cover", zoom=float(p.zoom), cx=float(keys[0][1]), cy=float(keys[0][2]),
                                keys=[[float(a), float(b), float(c)] for a, b, c in keys])
@@ -511,28 +521,16 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         if params.captions != "off" and cap_segments:
             cues = cues_for_pieces(cap_segments, [Piece(asset.id, p.a, p.b, p.start, 1.0) for p in sh.pieces],
                                    max_chars=style.max_chars, ids=ids, rules=rules, fps=fps)
-        for text, at, dur_c, src in info.get("cards", []):                 # 字卡 (title cards) from the cut list
-            if src is not None:                         # pinned to a source moment: where that moment plays (first time)
-                hit = next((p for p in sh.pieces if p.a - 1e-6 <= src < p.b), None)
-                if hit is None:
-                    notes.append(f"「{name}」的字卡「{text}」指定在來源 {_mmss(src)} 出現，但剪出的片段沒有包含這個時間，已略過。")
-                    continue
-                at = hit.start + (src - hit.a)
-            if at > total_len - 0.5:
-                notes.append(f"「{name}」的字卡「{text}」設定在第 {at:g} 秒出現，但這支只有 {total_len:.1f} 秒，已略過。")
-                continue
-            c0 = snap_time(max(at, 0.0), fps)
-            c1 = snap_time(min(c0 + dur_c, total_len), fps)
-            if c1 - c0 >= 0.1:
-                cues.append(CaptionCue(id=ids("q"), start=round(c0, 6), end=round(c1, 6), text=text,
-                                       style={"kind": "card"}))
+        sub_cues = list(cues)                                               # the subtitles (cards are their own layer)
+        cues = cues + card_cues
         seq.cues = cues
         n_cues_total += len(cues)
         # ---- music
         gain_db = float(params.music_gain_db)
         voice_ratio = float(info.get("stats", {}).get("voice_ratio", 0.0)) if feat.has_voice else 0.0
         if feat.has_voice and "voice_ratio" not in info.get("stats", {}):
-            vt = (feat.P_voiced[feat.a_idx(t_last)] - feat.P_voiced[feat.a_idx(t_first)]) / feat.afps
+            # over the pieces actually played (a cold open skips most of min..max)
+            vt = sum(feat.P_voiced[feat.a_idx(p.b)] - feat.P_voiced[feat.a_idx(p.a)] for p in sh.pieces) / feat.afps
             voice_ratio = min(1.0, vt / max(total_len, 1e-6))
         boosted = False
         if music is not None:
@@ -560,7 +558,7 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
                 pos_f += d_f
                 loops += 1
         seq.meta = {"shorts": {"asset_id": asset.id, "t0": _f(t_first), "t1": _f(t_last), "rank": rank,
-                               "score": _f(info.get("score", 0.0))}}
+                               "score": None if from_list else _f(info.get("score", 0.0))}}
         seq_dict = seq.to_dict()
         sequences.append(seq_dict)
         sid = seq.id
@@ -569,9 +567,9 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         score = float(info.get("score", 0.0))
         summary = f"{_mmss(t_first)}–{_mmss(t_last)} · {total_len:.0f} 秒 · 分數 {score:.2f}"
         decisions.append({
-            "id": ids("d"), "kind": "short", "sequence": sid, "score": _f(score),
+            "id": ids("d"), "kind": "short", "sequence": sid, "score": None if from_list else _f(score),
             "source": {"asset_id": asset.id, "t0": _f(t_first), "t1": _f(t_last)},
-            "summary": (f"{info.get('title') or '剪輯清單'} · {total_len:.0f} 秒 · {len(info.get('ranges', []))} 段"
+            "summary": (f"{info.get('title') or '剪輯清單'} · {total_len:.0f} 秒 · {len(_played_ranges(info))} 段"
                         if from_list else summary),
             "why": _cutlist_why(info, sh, feat) if from_list else _why(info, sh, band, feat, music is not None),
             "highlights": [{"t0": _f(u.start), "t1": _f(u.end), "text": u.text, "score": _f(u.score),
@@ -615,8 +613,8 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
         used = max(modes.items(), key=lambda kv: kv[1])[0] if modes else "center"
         face_ratio = 0.0
         if feat.has_faces:
-            nr = float(feat.P_ran[feat.v_idx(t_last)] - feat.P_ran[feat.v_idx(t_first)])
-            nf = float(feat.P_face[feat.v_idx(t_last)] - feat.P_face[feat.v_idx(t_first)])
+            nr = float(sum(feat.P_ran[feat.v_idx(p.b)] - feat.P_ran[feat.v_idx(p.a)] for p in sh.pieces))
+            nf = float(sum(feat.P_face[feat.v_idx(p.b)] - feat.P_face[feat.v_idx(p.a)] for p in sh.pieces))
             face_ratio = nf / nr if nr > 0 else 0.0
         decisions.append({
             "id": ids("d"), "kind": "reframe", "sequence": sid, "summary": _reframe_summary(params, used, face_ratio, sh),
@@ -625,7 +623,7 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
                          "keys": [len(p.keys) for p in sh.pieces], "zoom": [_f(p.zoom) for p in sh.pieces],
                          "strength": _f(params.reframe_strength)}})
         # caption
-        decisions.append(_caption_decision(ids, sid, params, cues, cap_segments, rules))
+        decisions.append(_caption_decision(ids, sid, params, sub_cues, cap_segments, rules, n_cards=len(card_cues)))
         # music
         if music is not None:
             mname = music.name or music.path
@@ -668,6 +666,51 @@ def plan_shorts(proj: Project, asset_id: str, params: ShortsParams, progress=Non
 
 
 # ------------------------------------------------------------------------------------ cut lists
+CARD_MIN_SECONDS = 1.0       # a title card shown for less than this (or less than it asked for) is not shown at all
+
+
+def _place_cards(cards: list, sh: _Short, fps: float, name: str, notes: list, ids) -> list[CaptionCue]:
+    """The cut list's title cards as cues on the short's timeline: ``at`` = seconds into the short, ``source`` = where
+    that source moment plays (the first time).  Cards never overlap: each ends where the next shown card starts (or
+    where the short ends); one that would be left shorter than ``min(1 s, its duration)`` is skipped, one that is
+    shortened is kept -- both with a note, so the person knows what the list asked for and what is shown."""
+    total = sh.length
+    placed: list[tuple[float, str, float]] = []                     # (start, text, requested duration)
+    for text, at, dur, src in cards:
+        if src is not None:
+            hit = next((p for p in sh.pieces if p.a - 1e-6 <= src < p.b), None)
+            if hit is None:
+                notes.append(f"「{name}」的字卡「{text}」指定在來源 {_mmss(src)} 出現，但剪出的片段沒有包含這個時間，已略過。")
+                continue
+            at = hit.start + (src - hit.a)
+        if at > total - 0.5:
+            notes.append(f"「{name}」的字卡「{text}」設定在第 {at:g} 秒出現，但這支只有 {total:.1f} 秒，已略過。")
+            continue
+        placed.append((snap_time(max(at, 0.0), fps), text, float(dur)))
+    placed.sort(key=lambda c: c[0])                                  # stable: same start keeps the listed order
+    keep: list[Optional[tuple[float, float]]] = [None] * len(placed)
+    by_card = [False] * len(placed)                                  # cut short by the next card (else: by the end)
+    nxt, nxt_is_card = total, False
+    for k in range(len(placed) - 1, -1, -1):                         # from the end: a skipped card limits nothing
+        c0, _text, dur = placed[k]
+        by_card[k] = nxt_is_card and c0 + dur > nxt + 1e-6
+        c1 = snap_time(min(c0 + dur, nxt), fps)
+        if c1 - c0 >= min(CARD_MIN_SECONDS, dur) - 1e-6:
+            keep[k] = (c0, c1)
+            nxt, nxt_is_card = c0, True
+    out: list[CaptionCue] = []
+    for k, (c0, text, dur) in enumerate(placed):
+        why = "下一張字卡接著出現" if by_card[k] else "這支短影音在這裡結束"
+        if keep[k] is None:
+            notes.append(f"「{name}」的字卡「{text}」只剩不到 {min(CARD_MIN_SECONDS, dur):g} 秒可以顯示（{why}），已略過。")
+            continue
+        c0, c1 = keep[k]
+        if c1 - c0 < dur - 1.0 / fps:
+            notes.append(f"「{name}」的字卡「{text}」只顯示 {c1 - c0:.1f} 秒（清單設定 {dur:g} 秒）：{why}。")
+        out.append(CaptionCue(id=ids("q"), start=round(c0, 6), end=round(c1, 6), text=text, style={"kind": "card"}))
+    return out
+
+
 def _scene_edge_notes(fixer: _CutFixer, i: int, ranges: list) -> list[str]:
     """A listed endpoint is kept as written, but one just before a scene cut (start) or just after one (end) shows a
     few frames of the neighbouring shot -- say so, with the time that would avoid it, and let the person decide."""
@@ -703,15 +746,25 @@ def _best_in_pieces(feat: sc.Feat, pieces: list, k: int) -> list:
     return out[:k]
 
 
+def _played_ranges(info: dict) -> list:
+    dropped = set(info.get("dropped", []))
+    return [r for k, r in enumerate(info.get("ranges", []), 1) if k not in dropped]
+
+
+def _is_cold_open(ranges: list) -> bool:
+    """The first range comes from later in the source than some range played after it."""
+    return len(ranges) > 1 and any(r[0] < ranges[0][0] for r in ranges[1:])
+
+
 def _cutlist_why(info: dict, sh: _Short, feat: sc.Feat) -> str:
-    ranges = info.get("ranges", [])
+    ranges = _played_ranges(info)
     bits = [f"依剪輯清單：「{info.get('title') or '未命名'}」"]
     if info.get("note"):
         bits.append(str(info["note"]))
-    cold = len(ranges) > 1 and ranges[0][0] > ranges[1][0]
-    bits.append(f"{len(ranges)} 段素材依清單順序接起來" + ("，第 1 段取自後面的內容當開場（冷開場）" if cold else ""))
-    if info.get("cards"):
-        bits.append("字卡：" + "／".join(c[0] for c in info["cards"]))
+    bits.append(f"{len(ranges)} 段素材依清單順序接起來"
+                + ("，第 1 段取自後面的內容當開場（冷開場）" if _is_cold_open(ranges) else ""))
+    if info.get("cards_placed"):
+        bits.append("字卡：" + "／".join(info["cards_placed"]))
     best = _best_in_pieces(feat, sh.pieces, 2)
     if best:
         bits.append("爆點句：" + "；".join(f"「{hl.quote(u.text)}」" for u in best))
@@ -763,7 +816,18 @@ def _reframe_why(params: ShortsParams, used: str, face_ratio: float, jumps: int,
     return "；".join(parts) + "。"
 
 
-def _caption_decision(ids, sid: str, params: ShortsParams, cues: list, segments: Optional[list], rules: AuditRules) -> dict:
+def _caption_decision(ids, sid: str, params: ShortsParams, cues: list, segments: Optional[list], rules: AuditRules,
+                      n_cards: int = 0) -> dict:
+    """``cues`` are the SUBTITLES only; ``n_cards`` title cards are mentioned separately (they are not subtitles)."""
+    d = _caption_decision_subs(ids, sid, params, cues, segments, rules)
+    if n_cards:
+        d["summary"] += f"；另有 {n_cards} 張字卡"
+        d.setdefault("evidence", {})["cards"] = n_cards
+    return d
+
+
+def _caption_decision_subs(ids, sid: str, params: ShortsParams, cues: list, segments: Optional[list],
+                           rules: AuditRules) -> dict:
     src = {"auto": "語音辨識逐字稿", "file": "字幕檔", "off": "關閉"}.get(params.captions, params.captions)
     if params.captions == "off":
         return {"id": ids("d"), "kind": "caption", "sequence": sid, "summary": "未加字幕", "why": "字幕設定為關閉。",

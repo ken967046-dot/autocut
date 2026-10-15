@@ -24,6 +24,8 @@ from ..core.plan import ERROR, INFO, WARN, AuditReceipt, EditPlan, Finding, Plan
 from ..core.project import Clip, Project, Sequence, Track, ordered_clips, validate_sequence
 from ..core.timecode import EPS
 from .captions import CAP_GAP
+
+CARD_READ_MIN = 1.0           # seconds a title card should stay up (warning below)
 from ..util import canonical_json, fingerprint_file, sha256_hex
 from .apply import plan_asset_map
 from .config import PLATFORM_RULES, AuditRules, ShortsParams, resolve_band
@@ -434,6 +436,23 @@ def _r_caption_overlap(c: _Ctx) -> None:
                     prev = q
 
 
+def _r_card_reading(c: _Ctx) -> None:
+    """Title cards are not subtitles (no rate, gap or length rules), but one shown too briefly to read is worth a
+    warning -- never an error: the person placed it."""
+    for seq in c.seqs:
+        for q in seq.cues:
+            if not q.is_card:
+                continue
+            dur, n = q.end - q.start, _chars(q.text)
+            if dur <= 0 or n == 0:
+                continue
+            if dur < CARD_READ_MIN - EPS:
+                c.add("card.reading", WARN, f"字卡「{_snippet(q.text)}」只顯示 {dur:.2f} 秒，可能來不及看", f"{seq.id}/{q.id}")
+            elif n / dur > c.rules.reading_fail_cps + EPS:
+                c.add("card.reading", WARN, f"字卡「{_snippet(q.text)}」閱讀速度 {n / dur:.1f} 字/秒，"
+                                            f"超過 {c.rules.reading_fail_cps:g} 字/秒，可能看不完", f"{seq.id}/{q.id}")
+
+
 def _r_caption_short(c: _Ctx) -> None:
     for seq in c.seqs:
         for q in _subs(seq):
@@ -564,6 +583,7 @@ _RULES: list[tuple[str, Callable[[_Ctx], None]]] = [
     ("shorts.first_cut", _r_shorts_first_cut), ("shorts.mid_word", _r_shorts_mid_word),
     ("caption.reading", _r_caption_reading), ("caption.rate", _r_caption_rate), ("caption.overlap", _r_caption_overlap),
     ("caption.short", _r_caption_short), ("caption.long", _r_caption_long), ("caption.range", _r_caption_range),
+    ("card.reading", _r_card_reading),
     ("assemble.target", _r_assemble_target), ("assemble.unused", _r_assemble_unused),
     ("longform.zoom", _r_longform_zoom),
     ("start.black", _r_start_black), ("total.max", _r_total_max),

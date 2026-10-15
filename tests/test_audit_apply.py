@@ -340,6 +340,19 @@ def test_caption_reading_of_fast_speech_packed_back_to_back_is_a_warning(proj):
     assert f2["ps1_qa"].severity == "warn" and f2["ps1_qb"].severity == "error" and not r2.accepted
 
 
+
+def test_card_reading_warns_but_never_blocks(proj):
+    """Title cards are exempt from the subtitle rules, but one shown too briefly to read gets a warning (REVIEW-5)."""
+    card = {"kind": "card"}
+    cues = good_cues()[:6] + [CaptionCue(id="ps1_k1", start=15.0, end=15.6, text="短暫的字卡", style=card),
+                              CaptionCue(id="ps1_k2", start=16.0, end=17.5, text="一二三四五六七八九十一二三", style=card),
+                              CaptionCue(id="ps1_k3", start=18.0, end=20.0, text="正常的字卡", style=card)]
+    r = run_audit(mk_plan([mk_seq("ps1", v=good_v(), cues=cues)]), proj)
+    f = {x.where.split("/")[1]: x for x in codes(r, "card.reading")}
+    assert set(f) == {"ps1_k1", "ps1_k2"} and all(x.severity == "warn" for x in f.values()) and r.accepted
+    assert "只顯示 0.60 秒" in f["ps1_k1"].message and "閱讀速度 8.7 字/秒" in f["ps1_k2"].message
+    assert not has(r, "caption.reading") and not has(r, "caption.short")
+
 def test_caption_rate(proj):
     sparse = mk_plan([mk_seq("ps1", v=good_v(), cues=good_cues(n=3))])
     f = codes(run_audit(sparse, proj), "caption.rate")
