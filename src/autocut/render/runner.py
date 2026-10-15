@@ -243,10 +243,14 @@ def render_sequence(proj: Project, seq: Sequence, out_path: str | os.PathLike,
         encoder = "libx264"
     burn = settings.burn_captions
     if burn and (comp.cues or comp.cards) and not info.has_ass:
-        warnings.append("這份 ffmpeg 不支援燒入字幕（缺少 libass），已改輸出 .srt 檔"
-                        + ("；字卡沒有辦法輸出" if comp.cards else ""))
+        # subtitles fall back to an .srt file next to the video; title cards have no such fallback
+        lost = ["字幕已改輸出 .srt 檔"] if comp.cues else []
+        if comp.cards:
+            lost.append("字卡沒有辦法燒進畫面")
+        warnings.append("這份 ffmpeg 不支援燒入字幕（缺少 libass），" + "；".join(lost))
         burn = False
-        settings.write_srt = True
+        if comp.cues:
+            settings.write_srt = True
 
     def attempt(enc_name: str) -> tuple[list[Path], int]:
         enc = EncodeSettings(encoder=enc_name, crf=preset.crf, x264_preset=preset.x264_preset,

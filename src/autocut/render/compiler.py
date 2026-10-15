@@ -30,7 +30,8 @@ from ..media.ffmpeg import FFmpegInfo
 from ..util import canonical_json, sha256_hex
 from .ass import build_ass
 
-RENDER_VERSION = 8          # 8: captions wrap to what fits across the frame (9:16 lines no longer run off the edges)
+RENDER_VERSION = 9          # 9: no line starts with punctuation, two lines when two fit, a backslash is drawn as typed
+                            # 8: captions wrap to what fits across the frame (9:16 lines no longer run off the edges)
                             # 7: sound that starts after the picture in the file keeps that offset (``first_pts=0``, no PTS rebase)
 #                             6: the picture keeps its place relative to the sound after ``-ss`` (no PTS rebase of the first frame)
 MAX_SEGMENT_SECONDS = 30.0

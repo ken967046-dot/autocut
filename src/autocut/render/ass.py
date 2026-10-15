@@ -7,8 +7,11 @@ from ..core.project import CaptionStyle, card_style
 
 _CLOSERS = set("）」』》〉】〕)]")
 _OPENERS = set("（「『《〈【〔([")
-# a line may end after these; a closing mark that overflows hangs on its line instead of starting the next one
-_BREAK_AFTER = set(" 　,，、.。;；:：!！?？…") | _CLOSERS
+# never start a line: a mark that overflows hangs on its line instead, and the marks right after it (。」) hang with it
+_NO_START = set("，。、；：？！…,.;:?!") | _CLOSERS
+# a line may end after these
+_BREAK_AFTER = set(" 　") | _NO_START
+_WJ = "\u2060"     # WORD JOINER (invisible, no width): written after every backslash so libass reads no escape
 
 
 def ass_color(rgb: str, alpha: float = 0.0) -> str:
@@ -30,18 +33,28 @@ def ass_time(t: float) -> str:
 
 
 def _unit(ch: str) -> float:
+    if ch == _WJ:
+        return 0.0
     return 1.0 if ord(ch) >= 0x2E80 else 0.55
 
 
 def _greedy(para: str, max_units: float) -> list[str]:
     lines: list[str] = []
     cur, width, last_break = "", 0.0, -1
-    for ch in para:
+    i = 0
+    while i < len(para):
+        ch = para[i]
+        i += 1
         cur += ch
         width += _unit(ch)
         if ch in _BREAK_AFTER:
             last_break = len(cur)
         if width > max_units:
+            if last_break == len(cur):                    # the overflowing mark hangs, and the marks after it too
+                while i < len(para) and para[i] in _NO_START:
+                    cur += para[i]
+                    i += 1
+                last_break = len(cur)
             if last_break > 0 and last_break >= len(cur) * 0.5:
                 lines.append(cur[:last_break].strip())
                 cur = cur[last_break:]
@@ -60,25 +73,27 @@ def _greedy(para: str, max_units: float) -> list[str]:
 
 def _fits(line: str, max_units: float) -> bool:
     w = sum(_unit(c) for c in line)
-    if line and line[-1] in _CLOSERS:                    # a closing mark may hang
-        w -= _unit(line[-1])
+    k = len(line)
+    while k > 1 and line[k - 1] in _NO_START:            # the marks at the end may hang (as in _greedy)
+        k -= 1
+        w -= _unit(line[k])
     return w <= max_units + 1e-9
 
 
 def _two_lines(para: str, max_units: float) -> list[str] | None:
     """The best split of ``para`` into two lines that both fit: as even as possible, never inside a Latin word, never
-    starting a line with a closing mark or ending one with an opening mark; breaks at punctuation and outside brackets
-    preferred.  ``None`` when no split fits."""
+    starting a line with punctuation or a closing mark or ending one with an opening mark; breaks at punctuation and
+    outside brackets preferred.  ``None`` when no split fits."""
     best, best_cost = None, None
     depth = 0
     for i in range(1, len(para)):
         prev, nxt = para[i - 1], para[i]
         depth += (prev in _OPENERS) - (prev in _CLOSERS)
         a, b = para[:i].strip(), para[i:].strip()
-        if not a or not b or nxt in _CLOSERS or prev in _OPENERS:
-            continue
-        if prev.isascii() and prev.isalnum() and nxt.isascii() and nxt.isalnum():
-            continue                                      # inside a Latin word or number
+        if not a or not b or b[0] in _NO_START or a[-1] in _OPENERS:
+            continue                                      # 「，。」」 never start a line, 「（」 never ends one
+        if (prev.isascii() and prev.isalnum() and nxt.isascii() and nxt.isalnum()) or nxt == _WJ:
+            continue                                      # inside a Latin word or number, or an escaped backslash
         if not (_fits(a, max_units) and _fits(b, max_units)):
             continue
         cost = abs(sum(_unit(c) for c in a) - sum(_unit(c) for c in b))
@@ -93,15 +108,16 @@ def _two_lines(para: str, max_units: float) -> list[str] | None:
 
 def wrap_text(text: str, max_units: float) -> str:
     """Soft-wrap mixed CJK/ASCII text to ``max_units`` full-width characters per line (ASS ``\\N`` joins).  Text that
-    needs two lines is split evenly at the most natural point (balanced subtitles, no one-character second line); a
-    closing mark hangs on its line, an opening mark never ends one."""
+    fits in two lines gets two, split evenly at the most natural point (balanced subtitles, no one-character second
+    line), even where the greedy pass needed three; punctuation and closing marks never start a line (they hang on the
+    line before), an opening mark never ends one."""
     lines: list[str] = []
     for para in text.replace("\r", "").strip().split("\n"):
         if _fits(para.strip(), max_units):
             lines.append(para.strip())
             continue
         greedy = _greedy(para, max_units)
-        two = _two_lines(para.strip(), max_units) if len(greedy) == 2 else None
+        two = _two_lines(para.strip(), max_units) if len(greedy) >= 2 else None
         lines.extend(two or greedy)
     return "\\N".join(ln for ln in lines if ln)
 
@@ -109,15 +125,26 @@ def wrap_text(text: str, max_units: float) -> str:
 def wrap_units(style: CaptionStyle, width: int, height: int) -> int:
     """Full-width characters per line: the style's ``max_chars``, but never more than fit across the frame between the
     5 % side margins (a 9:16 frame holds far fewer big characters than a 16:9 one -- without this a 15-character
-    subtitle ran off both edges).  The renderer and the preview monitor both wrap with this."""
-    size = max(8, int(round(style.size * height)))
-    border = max(style.outline * height, size * 0.18 if style.box else 0.0)
-    fit = int((width * 0.9 - 2.0 * border) / (size * 1.02))      # a little slack for bold glyphs
+    subtitle ran off both edges).  The renderer and the preview monitor both wrap with this.  Only the frame's aspect
+    counts (size and outline are fractions of the height), so the monitor (sequence size), a draft and the final export
+    (preset sizes) break a line at the same place."""
+    aspect = width / max(1, height)
+    size = max(1e-3, style.size)
+    border = max(0.0, style.outline, size * 0.18 if style.box else 0.0)
+    fit = int((aspect * 0.9 - 2.0 * border) / (size * 1.02))     # a little slack for bold glyphs
     return max(2, min(max(4, int(style.max_chars)), fit))
 
 
 def _escape(text: str) -> str:
-    return text.replace("{", "(").replace("}", ")")
+    """Plain text for a Dialogue line: braces would open an override block, a backslash an escape (``\\n`` breaks the
+    line under WrapStyle 2, ``\\h`` is a space); a word joiner after every backslash keeps it a plain character."""
+    return text.replace("{", "(").replace("}", ")").replace("\\", "\\" + _WJ)
+
+
+def display_lines(text: str, max_units: float) -> list[str]:
+    """The lines libass draws for ``text`` (escaped and wrapped like :func:`build_ass`), as plain text -- what the
+    preview monitor paints."""
+    return [ln.replace(_WJ, "") for ln in wrap_text(_escape(text), max_units).split("\\N") if ln]
 
 
 def _style_line(name: str, style: CaptionStyle, width: int, height: int) -> str:

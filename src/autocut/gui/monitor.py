@@ -30,7 +30,7 @@ from ..core import geometry as geo
 from ..core import ops
 from ..core.project import CaptionStyle, Project, Sequence, card_style
 from ..core.timecode import EPS, fmt_timecode, frame_of
-from ..render.ass import wrap_text, wrap_units
+from ..render.ass import display_lines, wrap_units
 from ..render.live import LiveCompositor, LiveError
 from . import theme
 from .playback import (PREVIEW_FRESH, PREVIEW_NONE, PREVIEW_RENDERING, PREVIEW_STALE, PlaybackController)
@@ -279,14 +279,14 @@ def _caption_font(style: CaptionStyle, px: float) -> QFont:
 
 
 def active_cue_lines(seq: Sequence, t: float, cards: bool = False) -> list[list[str]]:
-    """Wrapped text lines of every subtitle (``cards=True``: every title card) showing at time ``t`` (same wrapping as
-    the ASS writer)."""
+    """Wrapped text lines of every subtitle (``cards=True``: every title card) showing at time ``t`` (same wrapping and
+    escaping as the ASS writer, so a backslash in the text shows as typed in both)."""
     out: list[list[str]] = []
     style = card_style(seq.caption_style) if cards else seq.caption_style
     units = wrap_units(style, seq.width, seq.height)
     for q in seq.cues:
         if q.is_card == cards and q.start - EPS <= t < q.end - EPS and q.text.strip():
-            out.append([ln for ln in wrap_text(q.text.replace("{", "(").replace("}", ")"), units).split("\\N") if ln])
+            out.append(display_lines(q.text, units))
     return out
 
 

@@ -485,6 +485,84 @@ def test_wrap_fits_the_frame_and_keeps_punctuation_with_its_text():
     assert wrap_text("一二三四五（六七八", 5) == "一二三四五\\N（六七八"                # 「（」 never ends one
 
 
+def test_wrap_never_starts_a_line_with_punctuation():
+    """A perfectly even cut used to beat the natural cut after the comma, so ，。？ started the second line."""
+    from autocut.render.ass import wrap_text
+    assert wrap_text("大家一起來看，今天的影片", 9) == "大家一起來看，\\N今天的影片"
+    assert wrap_text("所以我覺得，這樣不錯", 7) == "所以我覺得，\\N這樣不錯"                    # a 9:16 card
+    assert wrap_text("加盟就能當老闆？合約漏洞一堆", 9) == "加盟就能當老闆？\\N合約漏洞一堆"
+    assert wrap_text("她回我「我現在很忙。」然後就掛電話了", 9) == "她回我「我現在很忙。」\\N然後就掛電話了"
+    assert wrap_text("你看 」好了", 5) == "你看 」\\N好了"                                   # not after a space either
+
+
+def test_wrap_hangs_a_closing_mark_with_the_mark_before_it():
+    """When 。 hangs at the end of a full line, the 」 right after it hangs too instead of starting the next line (or
+    sitting alone on the last one)."""
+    from autocut.render.ass import wrap_text
+    assert wrap_text("我就說「真的好累喔。」他就笑了出來，然後說", 9) == "我就說「真的好累喔。」\\N他就笑了出來，\\N然後說"
+    assert wrap_text("個們的就有樣「就實重責個今。」", 7) == "個們的就有樣\\N「就實重責個今。」"
+
+
+def test_wrap_rules_hold_for_any_sentence():
+    import random
+    from autocut.render.ass import _NO_START, _OPENERS, _unit, wrap_text
+    rng = random.Random(5)
+    words = "我們今天要來聊一個很重要的話題就是這樣子覺得其實大家都有責任"
+    for _ in range(4000):
+        s = ""
+        for _ in range(rng.randint(1, 4)):
+            s += "「" * (rng.random() < 0.2) + "".join(rng.choice(words) for _ in range(rng.randint(1, 8)))
+            s += rng.choice(["，", "。", "？", "！", "、", "。」", "？」", "）", ""])
+        for width in (5, 7, 9):
+            lines = wrap_text(s, width).split("\\N")
+            assert "".join(lines) == s
+            for i, ln in enumerate(lines):
+                assert not (i and ln[0] in _NO_START), (s, width, lines)          # no line starts with ，。」
+                assert not (i < len(lines) - 1 and ln[-1] in _OPENERS), (s, width, lines)
+                body = ln.rstrip("".join(_NO_START)) or ln[:1]
+                assert sum(_unit(c) for c in body) <= width, (s, width, lines)    # only the marks at the end hang
+
+
+def test_wrap_uses_two_lines_when_two_fit():
+    """The greedy pass breaks early at punctuation and needed three lines here; two balanced lines fit."""
+    from autocut.render.ass import wrap_text
+    assert wrap_text("其實我覺得，這件事情不太對，對吧", 9) == "其實我覺得，這件\\N事情不太對，對吧"
+
+
+def test_wrap_units_depend_on_the_aspect_not_the_resolution():
+    """The monitor wraps at the sequence size and an export at the preset size; a card that fits on one line in the
+    monitor was burned on two in the 1080x1920 export (the pixel font size was rounded before dividing)."""
+    from autocut.core.project import CaptionStyle, card_style
+    from autocut.render.ass import build_ass, wrap_units
+    portrait = [(2160, 3840), (1080, 1920), (720, 1280), (540, 960), (360, 640)]
+    landscape = [(3840, 2160), (1920, 1080), (1280, 720), (960, 540), (640, 360)]
+    for i in range(20, 101):
+        for outline in (0.0, 0.006, 0.008):
+            for box in (False, True):
+                st = CaptionStyle(size=i / 1000, outline=outline, box=box, max_chars=16)
+                for style in (st, card_style(st)):
+                    for sizes in (portrait, landscape):
+                        assert len({wrap_units(style, w, h) for w, h in sizes}) == 1, (style, sizes)
+    card = card_style(CaptionStyle(size=0.046))
+    assert wrap_units(card, 2160, 3840) == wrap_units(card, 1080, 1920) == wrap_units(card, 720, 1280) == 9
+    big = build_ass([], CaptionStyle(size=0.046), 2160, 3840, cards=[(0.0, 2.0, "今天來聊聊理財觀念")])
+    small = build_ass([], CaptionStyle(size=0.046), 1080, 1920, cards=[(0.0, 2.0, "今天來聊聊理財觀念")])
+    assert big.split("Card,,0,0,0,,")[1] == small.split("Card,,0,0,0,,")[1] == "今天來聊聊理財觀念\n"
+
+
+def test_ass_text_keeps_a_backslash_a_plain_character():
+    """``\\n`` breaks the line under WrapStyle 2 and ``\\h`` is a space, so a typed ``C:\\new`` was drawn as 「C:」 over
+    「ew」; a word joiner after every backslash leaves nothing for libass to read as an escape."""
+    import re
+    from autocut.core.project import CaptionStyle
+    from autocut.render.ass import build_ass
+    ass = build_ass([(0.0, 2.0, "AB\\nCD")], CaptionStyle(), 1920, 1080,
+                    cards=[(0.0, 2.0, "C:\\new"), (0.0, 2.0, "A\\hB\\NC{\\b1}")])
+    texts = [ln.split(",,0,0,0,,")[1] for ln in ass.splitlines() if ln.startswith("Dialogue:")]
+    assert texts == ["AB\\\u2060nCD", "C:\\\u2060new", "A\\\u2060hB\\\u2060NC(\\\u2060b1)"]
+    assert not any(re.search(r"\\[^\u2060]", t) for t in texts)
+
+
 def test_render_long_portrait_subtitle_stays_inside_the_frame(mp, tmp_path):
     """A 15-character subtitle on 9:16 used to run off both edges (16 characters per line at 5.2 % of the height is
     ~1600 px on a 1080 px frame); now it wraps to two lines inside the side margins."""
@@ -506,3 +584,85 @@ def test_render_long_portrait_subtitle_stays_inside_the_frame(mp, tmp_path):
     assert cols.min() > 360 * 0.03 and cols.max() < 360 * 0.97                   # nothing touches the edges
     bands = np.nonzero(np.diff(np.unique(rows)) > 3)[0]
     assert len(bands) >= 1                                                        # two separate lines of text
+
+
+def _bands(mask) -> list[tuple[int, int]]:
+    """Column extent (first, last) of every separate row band of ``mask`` (one band per line of text)."""
+    rows = np.unique(np.nonzero(mask)[0])
+    if not len(rows):
+        return []
+    cuts = np.nonzero(np.diff(rows) > 3)[0]
+    out = []
+    for lo, hi in zip(np.r_[0, cuts + 1], np.r_[cuts, len(rows) - 1]):
+        cols = np.nonzero(mask[rows[lo]:rows[hi] + 1].any(axis=0))[0]
+        out.append((int(cols.min()), int(cols.max())))
+    return out
+
+
+def test_render_portrait_subtitle_keeps_the_comma_on_the_first_line(mp, tmp_path):
+    """「大家一起來看，今天的影片」 on 9:16 is burned as 7 + 5 characters (the comma ends line 1); it used to be 6 + 6 with
+    the comma starting line 2, two lines of the same width."""
+    p, a = mp
+    seq = p.active_sequence()
+    set_fmt(seq, 360, 640)
+    ops.place_clip(p, seq, a["port"].id, seq.video_tracks[0].id, start=0, src_out=2)   # solid blue 9:16
+    ops.set_caption_style(p, seq, size=0.052, bold=True, outline=0.008, position="bottom", margin=0.20, max_chars=16,
+                          font="Noto Sans CJK TC")
+    ops.add_cue(p, seq, 0.0, 2.0, "大家一起來看，今天的影片")
+    out = tmp_path / "comma.mp4"
+    res = render_sequence(p, seq, out, RenderSettings(preset="draft_fast", normalize=False))
+    if any("libass" in w for w in res.warnings):
+        pytest.skip("this ffmpeg has no libass")
+    f = frame_at(out, 1.0).astype(int)
+    bands = _bands(f.min(axis=2) > 170)                                          # white glyphs on the blue picture
+    assert len(bands) == 2
+    (a0, a1), (b0, b1) = bands
+    assert (a1 - a0) > 1.2 * (b1 - b0)                                            # 「大家一起來看，」 over 「今天的影片」
+    assert a0 > 360 * 0.03 and a1 < 360 * 0.97
+
+
+def test_render_backslash_in_a_card_or_subtitle_is_drawn_as_typed(mp, tmp_path):
+    """libass read 「\\n」 in 「C:\\new」 as a line break (the card showed 「C:」 over 「ew」) while the monitor showed one
+    line; now both draw the text as typed, on one line."""
+    p, a = mp
+    seq = p.active_sequence()
+    set_fmt(seq, 360, 640)
+    ops.place_clip(p, seq, a["port"].id, seq.video_tracks[0].id, start=0, src_out=2)   # solid blue 9:16
+    seq.caption_style.font = "DejaVu Sans"
+    ops.add_cue(p, seq, 0.0, 2.0, "AB\\nCD")
+    ops.add_cue(p, seq, 0.0, 2.0, "C:\\new", card=True)
+    out = tmp_path / "backslash.mp4"
+    res = render_sequence(p, seq, out, RenderSettings(preset="draft_fast", normalize=False))
+    if any("libass" in w for w in res.warnings):
+        pytest.skip("this ffmpeg has no libass")
+    f = frame_at(out, 1.0)
+    h = 640
+    assert len(_bands(_yellow(f)[:int(0.4 * h)])) == 1                           # the card: one line
+    white = f.astype(int).min(axis=2) > 170
+    assert len(_bands(white[int(0.6 * h):])) == 1                                # the subtitle: one line
+
+
+def test_export_without_libass_names_what_was_lost(mp, tmp_path, monkeypatch):
+    """Without libass subtitles fall back to an .srt; title cards have no fallback.  A cards-only export used to say an
+    .srt had been written when none was."""
+    import autocut.render.runner as runner_mod
+    real = ffmpeg_info()
+    monkeypatch.setattr(runner_mod, "ffmpeg_info", lambda: replace(real, filters=real.filters - {"ass"}))
+    p, a = mp
+    seq = p.active_sequence()
+    set_fmt(seq, 360, 640)
+    ops.place_clip(p, seq, a["port"].id, seq.video_tracks[0].id, start=0, src_out=2)
+    ops.add_cue(p, seq, 0.0, 2.0, "CARD", card=True)
+    cards_only = tmp_path / "cards_only.mp4"
+    settings = RenderSettings(preset="draft_fast", normalize=False)
+    res = render_sequence(p, seq, cards_only, settings)
+    (msg,) = [w for w in res.warnings if "libass" in w]
+    assert "字卡" in msg and ".srt" not in msg and "字幕已" not in msg
+    assert cards_only.exists() and not cards_only.with_suffix(".srt").exists() and not settings.write_srt
+    ops.add_cue(p, seq, 0.0, 2.0, "SUBTITLE")
+    both = tmp_path / "both.mp4"
+    res = render_sequence(p, seq, both, RenderSettings(preset="draft_fast", normalize=False))
+    (msg,) = [w for w in res.warnings if "libass" in w]
+    assert "字幕已改輸出 .srt 檔" in msg and "字卡" in msg
+    srt = both.with_suffix(".srt").read_text(encoding="utf-8")
+    assert "SUBTITLE" in srt and "CARD" not in srt
