@@ -695,7 +695,7 @@ def _place_cards(cards: list, sh: _Short, fps: float, name: str, notes: list, id
         c0, _text, dur = placed[k]
         by_card[k] = nxt_is_card and c0 + dur > nxt + 1e-6
         c1 = snap_time(min(c0 + dur, nxt), fps)
-        if c1 - c0 >= min(CARD_MIN_SECONDS, dur) - 1e-6:
+        if c1 - c0 >= min(CARD_MIN_SECONDS, dur) - 0.5 / fps - 1e-6:     # half a frame: times are frame-snapped
             keep[k] = (c0, c1)
             nxt, nxt_is_card = c0, True
     out: list[CaptionCue] = []

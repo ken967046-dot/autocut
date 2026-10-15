@@ -410,3 +410,12 @@ def test_the_caption_decision_counts_subtitles_not_cards(tmp_path, patched_analy
     n_subs = sum(1 for q in seq.cues if not q.is_card)
     assert cap[0]["summary"].startswith(f"{n_subs} 條字幕") and cap[0]["summary"].endswith("另有 1 張字卡")
     assert cap[0]["evidence"]["max_chars"] < 23 and cap[0]["evidence"]["cards"] == 1
+
+
+
+def test_a_card_whose_duration_is_not_on_the_frame_grid_is_kept(tmp_path, patched_analysis, source_file):
+    """At 24 fps a 0.6 s card is 14 frames (0.583 s): frame rounding must not count as "no room" (Codex REVIEW-5b)."""
+    data = {"shorts": [{"ranges": [[40, 52]], "cards": [{"text": "短卡", "at": 0, "duration": 0.6}]}]}
+    _proj, _params, plan = plan_from(tmp_path, data, patched_analysis, source_file, fps=24.0)
+    assert _cards(plan) == [("短卡", 0.0, round(14 / 24, 3))]
+    assert not any("短卡" in n for n in plan.notes)
